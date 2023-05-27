@@ -13,6 +13,7 @@ using SharpDX.DirectInput;
 using System.Collections;
 using System.Linq;
 using IniParser.Exceptions;
+using System.Reflection;
 
 namespace WACCALauncher
 {
@@ -27,6 +28,7 @@ namespace WACCALauncher
 
         private readonly PrivateFontCollection _fonts = new PrivateFontCollection();
         private Label _loadingLabel;
+        private Label _versionLabel;
 
         private Font _menuFont;
 
@@ -259,6 +261,21 @@ namespace WACCALauncher
             this.Controls.Add(CurrentMenu[_currentMenuItem].label);
         }
 
+        private static void vfd_test()
+        {
+            var vfd = new WaccaVFD();
+            vfd.Power(true);
+            vfd.Clear();
+            vfd.Brightness(WaccaVFD.bright.BRIGHT_50);
+            vfd.Cursor(0, 0);
+            vfd.CanvasShift(0);
+            vfd.Write("Testing VFD!");
+            vfd.Cursor(0, 16);
+            vfd.ScrollSpeed(2);
+            vfd.ScrollText(Math.PI.ToString()+" ");
+            vfd.ScrollStart();
+        }
+
         private void Form1_Load(object sender, EventArgs e)
         {
             _loadingLabel = new Label();
@@ -275,6 +292,21 @@ namespace WACCALauncher
 
             this.Controls.Add(_loadingLabel);
 
+            _versionLabel = new Label();
+
+            _versionLabel.Font = _menuFont;
+            _versionLabel.ForeColor = Color.FromArgb(50,50,50);
+            _versionLabel.Location = new Point(458, 1000);
+            _versionLabel.Name = "versionLabel";
+            _versionLabel.Size = new Size(164, 30);
+            _versionLabel.TabIndex = 0;
+            _versionLabel.Text = Assembly.GetEntryAssembly().GetName().Version.ToString();
+            _versionLabel.TextAlign = ContentAlignment.MiddleCenter;
+
+            Console.WriteLine(_versionLabel.Text);
+
+            this.Controls.Add(_versionLabel);
+
             LoadVersionsFromConfig();
 
             var defVerMenu = new ConfigMenu("default version");
@@ -288,6 +320,10 @@ namespace WACCALauncher
             defVerMenu.Add(new ConfigMenuItem("Return to settings", ConfigMenuAction.Return));
 
             MainMenu.Add(new ConfigMenuItem("set default version", ConfigMenuAction.Submenu, submenu: defVerMenu));
+
+            MainMenu.Add(new ConfigMenuItem("test VFD", ConfigMenuAction.Command, method: vfd_test));
+
+            MainMenu.Add(new ConfigMenuItem("exit to windows", ConfigMenuAction.Command, method: Application.Exit));
 
             MainMenu.Add(new ConfigMenuItem("launch game", ConfigMenuAction.Return));
 
