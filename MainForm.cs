@@ -44,6 +44,8 @@ namespace WACCALauncher
         private readonly Process _gameProcess = new Process();
         private bool _gameRunning = false;
 
+        public MenuManager _menuManager;
+
         public MainForm()
         {
             InitializeComponent();
@@ -93,16 +95,6 @@ namespace WACCALauncher
         
         private bool _autoLaunch = true;
         private int _currentMenuItem;
-        public ConfigMenu CurrentMenu;
-            
-        public readonly ConfigMenu MainMenu = new ConfigMenu("Launcher Settings", rootMenu: true) { 
-            //new ConfigMenuItem("bruh"), 
-            //new ConfigMenuItem("moments"),
-            //new ConfigMenuItem("of"), 
-            //new ConfigMenuItem("history")
-        };
-
-        
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
@@ -110,11 +102,19 @@ namespace WACCALauncher
             {
                 if (keyData == Keys.Up) { CursorUp(); return true; }
                 else if (keyData == Keys.Down) { CursorDown(); return true; }
+                else if (keyData == Keys.Enter) { MenuSelect(); return true; }
+                else if (keyData == Keys.Escape)
+                {
+                    if (_autoLaunch) MenuShow();
+                    else MenuBack();
+                    return true;
+                }
             }
 
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
+        /*
         private void KeyPressed(object sender, KeyPressEventArgs e)
         {
             if (_gameRunning) return;
@@ -130,7 +130,7 @@ namespace WACCALauncher
                     e.Handled = true;
                     break;
             }
-        }
+        }*/
 
         private async void Tick(object sender, EventArgs e)
         {
@@ -194,29 +194,24 @@ namespace WACCALauncher
         private void CursorUp()
         {
             // move cursor up
-            Console.WriteLine("CursorUp");
-            CurrentMenu[_currentMenuItem].Deactivate();
-            _currentMenuItem = ((_currentMenuItem - 1) + CurrentMenu.Count) % CurrentMenu.Count;
-            Console.WriteLine($"Item {_currentMenuItem}");
-            RefreshMenu();
+            var idx = ((waccaListTest.SelectedIndex - 1) + waccaListTest.Items.Count) % waccaListTest.Items.Count;
+            waccaListTest.SelectedIndex = idx;
         }
 
         private void CursorDown()
         {
             // move cursor down
-            Console.WriteLine("CursorDown");
-            CurrentMenu[_currentMenuItem].Deactivate();
-            _currentMenuItem = (_currentMenuItem + 1) % CurrentMenu.Count;
-            Console.WriteLine($"Item {_currentMenuItem}");
-            RefreshMenu();
+            var idx = (waccaListTest.SelectedIndex + 1) % waccaListTest.Items.Count;
+            waccaListTest.SelectedIndex = idx;
         }
 
         public void MenuShow()
         {
             _delayTimer.Stop();
-            _loadingLabel.Visible = false;
-            menuLabel.Visible = true;
-            GenerateMenu(MainMenu);
+            _loadingLabel.Hide();
+            menuLabel.Show();
+            waccaListTest.Visible = waccaListTest.Enabled = true;
+            waccaListTest.SelectedIndex = 0;
             _autoLaunch = false;
         }
 
@@ -224,10 +219,7 @@ namespace WACCALauncher
         {
             _autoLaunch = true;
             menuLabel.Hide();
-            foreach (var item in CurrentMenu)
-            {
-                item.label.Dispose();
-            }
+            waccaListTest.Visible = waccaListTest.Enabled = false;
             _loadingLabel.Show();
 
             _delayTimer = new System.Timers.Timer(5000);
@@ -240,14 +232,17 @@ namespace WACCALauncher
         {
             // select menu item
             Console.WriteLine("MenuSelect");
-            CurrentMenu[_currentMenuItem].Select(this, CurrentMenu);
+            (waccaListTest.SelectedItem as ConfigMenuItem).Select(this);
         }
-        
+
         private void MenuBack()
         {
             // back from current menu item
             Console.WriteLine("MenuBack");
         }
+
+        /*
+        
 
         private void MenuReturn()
         {
@@ -260,6 +255,8 @@ namespace WACCALauncher
             CurrentMenu[_currentMenuItem].Activate();
             this.Controls.Add(CurrentMenu[_currentMenuItem].label);
         }
+
+        */
 
         private static void vfd_test()
         {
@@ -279,6 +276,7 @@ namespace WACCALauncher
         private void Form1_Load(object sender, EventArgs e)
         {
             _loadingLabel = new Label();
+            waccaListTest.Font = _menuFont;
             SuspendLayout();
 
             _loadingLabel.Font = _menuFont;
@@ -309,7 +307,7 @@ namespace WACCALauncher
 
             LoadVersionsFromConfig();
 
-            var defVerMenu = new ConfigMenu("default version");
+            var defVerMenu = new List<ConfigMenuItem>();
 
             foreach (var ver in Versions)
             {
@@ -319,17 +317,21 @@ namespace WACCALauncher
 
             defVerMenu.Add(new ConfigMenuItem("Return to settings", ConfigMenuAction.Return));
 
-            MainMenu.Add(new ConfigMenuItem("set default version", ConfigMenuAction.Submenu, submenu: defVerMenu));
+            var mainMenu = new List<ConfigMenuItem>() {
+                new ConfigMenuItem("set default version", ConfigMenuAction.Submenu, submenu: defVerMenu),
+                new ConfigMenuItem("test VFD", ConfigMenuAction.Command, method: vfd_test),
+                new ConfigMenuItem("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
+                new ConfigMenuItem("launch game", ConfigMenuAction.Return)
+            };
 
-            MainMenu.Add(new ConfigMenuItem("test VFD", ConfigMenuAction.Command, method: vfd_test));
-
-            MainMenu.Add(new ConfigMenuItem("exit to windows", ConfigMenuAction.Command, method: Application.Exit));
-
-            MainMenu.Add(new ConfigMenuItem("launch game", ConfigMenuAction.Return));
+            _menuManager = new MenuManager(mainMenu, "Launcher Settings");
+            waccaListTest.AssignMenuManager(_menuManager);
 
             _loadingLabel.Font = _menuFont;
             menuLabel.Font = _menuFont;
         }
+
+        /*
 
         public void GenerateMenu(ConfigMenu menu, int selectedIndex = 0)
         {
@@ -366,6 +368,8 @@ namespace WACCALauncher
 
             RefreshMenu();
         }
+
+        */
 
         private static void KillExplorer()
         {
@@ -409,8 +413,8 @@ namespace WACCALauncher
         private void LaunchDefault(Object source, ElapsedEventArgs e)
         {
             _delayTimer.Stop();
-            KillExplorer();
-            LaunchGame(DefaultVer);
+            //KillExplorer();
+            //LaunchGame(DefaultVer);
         }
 
         private void LoadVersionsFromConfig()
@@ -581,93 +585,18 @@ namespace WACCALauncher
         Return
     }
 
-    public class ConfigMenu : IList<ConfigMenuItem>
-    {
-        public readonly string Name;
-        public bool RootMenu = false;
-        public ConfigMenu ParentMenu = null;
-        private readonly List<ConfigMenuItem> _items = new List<ConfigMenuItem>();
-
-        public ConfigMenu(string name, bool rootMenu = false)
-        {
-            this.Name = name;
-            this.RootMenu = rootMenu;
-        }
-
-        public ConfigMenuItem this[int index] { get => _items[index]; set => _items[index] = value; }
-
-        public int Count => _items.Count;
-
-        public bool IsReadOnly => false;
-
-        public void Add(ConfigMenuItem item)
-        {
-            _items.Add(item);
-        }
-
-        public void Clear()
-        {
-            _items.Clear();
-        }
-
-        public bool Contains(ConfigMenuItem item)
-        {
-            return _items.Contains(item);
-        }
-
-        public void CopyTo(ConfigMenuItem[] array, int arrayIndex)
-        {
-            _items.CopyTo(array, arrayIndex);
-        }
-
-        public IEnumerator<ConfigMenuItem> GetEnumerator()
-        {
-            return _items.GetEnumerator();
-        }
-
-        public int IndexOf(ConfigMenuItem item)
-        {
-            return _items.IndexOf(item);
-        }
-
-        public void Insert(int index, ConfigMenuItem item)
-        {
-            _items.Insert(index, item);
-        }
-
-        public bool Remove(ConfigMenuItem item)
-        {
-            return _items.Remove(item);
-        }
-
-        public void RemoveAt(int index)
-        {
-            _items.RemoveAt(index);
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            return _items.GetEnumerator();
-        }
-
-        public void Destroy()
-        {
-            Clear();
-        }
-    }
-
     public class ConfigMenuItem
     {
         public readonly string Name;
         private readonly ConfigMenuAction _action;
         private readonly Action _method;
-        private readonly ConfigMenu _submenu;
+        public readonly List<ConfigMenuItem> submenu;
         private readonly List<string> _options;
         private readonly Version _version;
 
         public Label label;
 
-        public ConfigMenuItem(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, ConfigMenu submenu = null, List<string> options = null, Version version = null) { 
+        public ConfigMenuItem(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenuItem> submenu = null, List<string> options = null, Version version = null) { 
             this.Name = name;
             this._action = action;
 
@@ -681,7 +610,7 @@ namespace WACCALauncher
                 throw new ArgumentException($"Menu item '{name}' was defined with VersionSelect type, but has no version associated.");
 
             this._method = method;
-            this._submenu = submenu;
+            this.submenu = submenu;
             this._options = options;
             this._version = version;
         }
@@ -696,17 +625,19 @@ namespace WACCALauncher
             label.ForeColor = Color.White;
         }
 
-        public void Select(MainForm form, ConfigMenu menu)
+        public void Select(MainForm form)
         {
             if (_action == ConfigMenuAction.Command)
             {
                 // only works with static methods, why
                 this._method();
             }
-            else if (_action == ConfigMenuAction.Submenu && _submenu != null)
+            else if (_action == ConfigMenuAction.Submenu && submenu != null)
             {
                 Console.WriteLine("attempting submenu");
-                form.GenerateMenu(_submenu);
+                form._menuManager.NavigateToSubMenu(Name);
+                form.waccaListTest.Update();
+                //form.GenerateMenu(_submenu);
             }
             else if (_action == ConfigMenuAction.ItemSelect && _options != null)
             {
@@ -720,16 +651,54 @@ namespace WACCALauncher
                 for (int i = 0; i < form.Versions.Count; i++)
                 {
                     var name = form.Versions[i].GameVersion == VersionType.Custom ? form.Versions[i].CustomName : form.Versions[i].ToString();
-                    menu[i].label.Text = $"({(form.Versions[i] == form.DefaultVer ? 'X' : ' ')}) {name}".ToUpper();
+                    //menu[i].label.Text = $"({(form.Versions[i] == form.DefaultVer ? 'X' : ' ')}) {name}".ToUpper();
                 }
-                form.RefreshMenu();
+                //form.RefreshMenu();
             }
-            else if (_action == ConfigMenuAction.Return)
-                if(form.CurrentMenu == form.MainMenu)
-                {
-                    form.MenuHide();
-                }
-                else form.GenerateMenu(form.CurrentMenu.ParentMenu);
+            else if (_action == ConfigMenuAction.Return) { form.MenuHide(); }
+        }
+
+        public override string ToString()
+        {
+            return Name;
         }
     }
+
+    public class MenuManager
+    {
+        private List<ConfigMenuItem> currentMenu;
+        public readonly string name;
+
+        public MenuManager(List<ConfigMenuItem> menu, string menuName)
+        {
+            currentMenu = menu;
+            name = menuName;
+        }
+
+        public List<ConfigMenuItem> GetCurrentMenu()
+        {
+            return currentMenu;
+        }
+
+        public void NavigateToSubMenu(string optionName)
+        {
+            if (optionName != string.Empty && optionName != null)
+            {
+                var selectedItem = currentMenu.Find(x => x.Name == optionName);
+                if (selectedItem.submenu != null && selectedItem.submenu.Count > 0)
+                {
+                    currentMenu = selectedItem.submenu;
+                }
+            }
+        }
+
+        //public void NavigateBack()
+        //{
+        //    if (currentMenu > 0 && currentMenu[0].Parent != null)
+        //    {
+        //        currentMenu = currentMenu[0].Parent.SubItems;
+        //    }
+        //}
+    }
+
 }
