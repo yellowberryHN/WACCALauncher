@@ -91,20 +91,20 @@ namespace WACCALauncher
         private bool[] _buttonStates;
         private bool[] _lastButtonStates = new bool[4];
         
-        private bool _autoLaunch = true;
+        public bool _autoLaunch = true;
         private int _currentMenuItem;
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (!_gameRunning)
             {
-                if (keyData == Keys.Up) { CursorUp(); return true; }
-                else if (keyData == Keys.Down) { CursorDown(); return true; }
-                else if (keyData == Keys.Enter) { MenuSelect(); return true; }
+                if (keyData == Keys.Up) { _menuManager.CursorUp(); return true; }
+                else if (keyData == Keys.Down) { _menuManager.CursorDown(); return true; }
+                else if (keyData == Keys.Enter) { _menuManager.MenuSelect(); return true; }
                 else if (keyData == Keys.Escape)
                 {
                     if (_autoLaunch) MenuShow();
-                    else MenuBack();
+                    else _menuManager.MenuBack();
                     return true;
                 }
             }
@@ -157,21 +157,21 @@ namespace WACCALauncher
                 if (_buttonStates[0] && !_lastButtonStates[0])
                 {
                     Console.WriteLine("vol down");
-                    CursorDown();
+                    _menuManager.CursorDown();
                 }
 
                 // vol up
                 if (_buttonStates[1] && !_lastButtonStates[1])
                 {
                     Console.WriteLine("vol up");
-                    CursorUp();
+                    _menuManager.CursorUp();
                 }
 
                 // service
                 if (_buttonStates[6] && !_lastButtonStates[6])
                 {
                     Console.WriteLine("service button");
-                    CursorDown();
+                    _menuManager.CursorDown();
                 }
 
                 // test
@@ -182,25 +182,11 @@ namespace WACCALauncher
                     {
                         MenuShow();
                     }
-                    else MenuSelect();
+                    else _menuManager.MenuSelect();
                 }
 
                 _lastButtonStates = _buttonStates;
             }
-        }
-
-        private void CursorUp()
-        {
-            // move cursor up
-            var idx = ((waccaListTest.SelectedIndex - 1) + waccaListTest.Items.Count) % waccaListTest.Items.Count;
-            waccaListTest.SelectedIndex = idx;
-        }
-
-        private void CursorDown()
-        {
-            // move cursor down
-            var idx = (waccaListTest.SelectedIndex + 1) % waccaListTest.Items.Count;
-            waccaListTest.SelectedIndex = idx;
         }
 
         public void MenuShow()
@@ -225,38 +211,10 @@ namespace WACCALauncher
             _delayTimer.Enabled = true;
         }
 
-        public void MenuBack()
+        public void MenuUpdateLabel(string text)
         {
-            // back from current menu item
-            Console.WriteLine("MenuBack");
-            if (_menuManager.GetCurrentMenu().ParentMenu == null)
-                MenuHide();
-            else _menuManager.NavigateBack();
+            menuLabel.Text = text.ToUpper();
         }
-
-        private void MenuSelect()
-        {
-            // select menu item
-            Console.WriteLine("MenuSelect");
-            (waccaListTest.SelectedItem as ConfigMenu).Select(this);
-        }
-
-        /*
-        
-
-        private void MenuReturn()
-        {
-            GenerateMenu(MainMenu);
-        }
-
-        public void RefreshMenu()
-        {
-            this.Controls.Remove(CurrentMenu[_currentMenuItem].label);
-            CurrentMenu[_currentMenuItem].Activate();
-            this.Controls.Add(CurrentMenu[_currentMenuItem].label);
-        }
-
-        */
 
         private static void vfd_test()
         {
@@ -269,7 +227,7 @@ namespace WACCALauncher
             vfd.Write("Testing VFD!");
             vfd.Cursor(0, 16);
             vfd.ScrollSpeed(2);
-            vfd.ScrollText(Math.PI.ToString()+" ");
+            vfd.ScrollText(Math.PI.ToString() + " ");
             vfd.ScrollStart();
         }
 
@@ -314,7 +272,7 @@ namespace WACCALauncher
                 new ConfigMenu("launch game", ConfigMenuAction.Return)
             });
 
-            _menuManager = new MenuManager(mainMenu, waccaListTest);
+            _menuManager = new MenuManager(mainMenu, waccaListTest, this);
 
             _loadingLabel.Font = _menuFont;
             menuLabel.Font = _menuFont;
@@ -376,8 +334,8 @@ namespace WACCALauncher
         private void LaunchDefault(Object source, ElapsedEventArgs e)
         {
             _delayTimer.Stop();
-            //KillExplorer();
-            //LaunchGame(DefaultVer);
+            KillExplorer();
+            LaunchGame(DefaultVer);
         }
 
         private void LoadVersionsFromConfig()
@@ -582,7 +540,7 @@ namespace WACCALauncher
                 // TODO: this is kinda jank, fix this
                 form._menuManager.UpdateCurrentMenuItems(form.GetDefaultVersionMenu());
             }
-            else if (_action == ConfigMenuAction.Return) { form.MenuBack(); }
+            else if (_action == ConfigMenuAction.Return) { form._menuManager.MenuBack(); }
         }
 
         public ConfigMenu(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenu> items = null, List<string> options = null, Version version = null)
@@ -616,14 +574,54 @@ namespace WACCALauncher
         private ConfigMenu _rootMenu;
         private ConfigMenu _currentMenu;
         private WaccaList _list;
+        private MainForm _form;
 
-        public MenuManager(ConfigMenu root, WaccaList list)
+        public MenuManager(ConfigMenu root, WaccaList list, MainForm form)
         {
             _rootMenu = root;
             _currentMenu = _rootMenu;
             _list = list;
             _list.AssignMenuManager(this);
-            UpdateList();
+            _form = form;
+            UpdateList();      
+        }
+
+        public void CursorUp()
+        {
+            // move cursor up
+            if (_form._autoLaunch) return;
+
+            var idx = ((_list.SelectedIndex - 1) + _list.Items.Count) % _list.Items.Count;
+            _list.SelectedIndex = idx;
+        }
+
+        public void CursorDown()
+        {
+            // move cursor down
+            if (_form._autoLaunch) return;
+
+            var idx = (_list.SelectedIndex + 1) % _list.Items.Count;
+            _list.SelectedIndex = idx;
+        }
+
+        public void MenuBack()
+        {
+            // back from current menu item
+            if (_form._autoLaunch) return;
+
+            Console.WriteLine("MenuBack");
+            if (_form._menuManager.GetCurrentMenu().ParentMenu == null)
+                _form.MenuHide();
+            else _form._menuManager.NavigateBack();
+        }
+
+        public void MenuSelect()
+        {
+            // select menu item
+            if (_form._autoLaunch) return;
+
+            Console.WriteLine("MenuSelect");
+            (_list.SelectedItem as ConfigMenu).Select(_form);
         }
 
         public ConfigMenu GetCurrentMenu()
@@ -655,6 +653,7 @@ namespace WACCALauncher
             var oldIndex = _list.SelectedIndex;
             _list.Items.Clear();
             _list.Items.AddRange(_currentMenu.Items.ToArray());
+            _form.MenuUpdateLabel(_currentMenu.Name);
             if (_list.Items.Count > 0) _list.SelectedIndex = preserveIndex ? oldIndex : 0;
         }
     }

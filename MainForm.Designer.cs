@@ -83,7 +83,7 @@
         #endregion
 
         private System.Windows.Forms.Label menuLabel;
-        public WaccaList waccaListTest;
+        private WaccaList waccaListTest;
     }
 }
 
