@@ -10,9 +10,7 @@ using System.Diagnostics;
 using IniParser;
 using IniParser.Model;
 using SharpDX.DirectInput;
-using System.Collections;
 using System.Linq;
-using IniParser.Exceptions;
 using System.Reflection;
 
 namespace WACCALauncher
@@ -211,7 +209,6 @@ namespace WACCALauncher
             _loadingLabel.Hide();
             menuLabel.Show();
             waccaListTest.Visible = waccaListTest.Enabled = true;
-            waccaListTest.SelectedIndex = 0;
             _autoLaunch = false;
         }
 
@@ -228,17 +225,20 @@ namespace WACCALauncher
             _delayTimer.Enabled = true;
         }
 
+        public void MenuBack()
+        {
+            // back from current menu item
+            Console.WriteLine("MenuBack");
+            if (_menuManager.GetCurrentMenu().ParentMenu == null)
+                MenuHide();
+            else _menuManager.NavigateBack();
+        }
+
         private void MenuSelect()
         {
             // select menu item
             Console.WriteLine("MenuSelect");
-            (waccaListTest.SelectedItem as ConfigMenuItem).Select(this);
-        }
-
-        private void MenuBack()
-        {
-            // back from current menu item
-            Console.WriteLine("MenuBack");
+            (waccaListTest.SelectedItem as ConfigMenu).Select(this);
         }
 
         /*
@@ -306,70 +306,34 @@ namespace WACCALauncher
             this.Controls.Add(_versionLabel);
 
             LoadVersionsFromConfig();
-
-            var defVerMenu = new List<ConfigMenuItem>();
-
-            foreach (var ver in Versions)
-            {
-                var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
-                defVerMenu.Add(new ConfigMenuItem($"({(ver == DefaultVer ? 'X' : ' ')}) {name}", ConfigMenuAction.VersionSelect, version: ver));
-            }
-
-            defVerMenu.Add(new ConfigMenuItem("Return to settings", ConfigMenuAction.Return));
-
-            var mainMenu = new ConfigMenu(new List<ConfigMenuItem>() {
-                new ConfigMenuItem("set default version", ConfigMenuAction.Submenu, submenu: defVerMenu),
-                new ConfigMenuItem("test VFD", ConfigMenuAction.Command, method: vfd_test),
-                new ConfigMenuItem("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
-                new ConfigMenuItem("launch game", ConfigMenuAction.Return)
+            
+            var mainMenu = new ConfigMenu("Launcher Settings", items: new List<ConfigMenu>() {
+                new ConfigMenu("set default version", ConfigMenuAction.Menu, items: GetDefaultVersionMenu()),
+                new ConfigMenu("test VFD", ConfigMenuAction.Command, method: vfd_test),
+                new ConfigMenu("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
+                new ConfigMenu("launch game", ConfigMenuAction.Return)
             });
 
-            _menuManager = new MenuManager(mainMenu);
-            waccaListTest.AssignMenuManager(_menuManager);
+            _menuManager = new MenuManager(mainMenu, waccaListTest);
 
             _loadingLabel.Font = _menuFont;
             menuLabel.Font = _menuFont;
         }
 
-        /*
-
-        public void GenerateMenu(ConfigMenu menu, int selectedIndex = 0)
+        public List<ConfigMenu> GetDefaultVersionMenu()
         {
-            if (menu == null || menu == CurrentMenu) return;
-            if(CurrentMenu != null)
+            var defVerMenu = new List<ConfigMenu>();
+
+            foreach (var ver in Versions)
             {
-                menu.ParentMenu = CurrentMenu;
-                foreach (var item in CurrentMenu)
-                {
-                    item.label.Dispose();
-                }
+                var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
+                defVerMenu.Add(new ConfigMenu($"({(ver == DefaultVer ? 'X' : ' ')}) {name}", ConfigMenuAction.VersionSelect, version: ver));
             }
 
-            CurrentMenu = menu;
-            _currentMenuItem = selectedIndex;
+            defVerMenu.Add(new ConfigMenu("Return to settings", ConfigMenuAction.Return));
 
-            menuLabel.Text = menu.Name.ToUpper();
-            var menuIndex = 0;
-
-            foreach (var item in menu)
-            {
-                item.label = new Label();
-                item.label.Text = item.Name.ToUpper();
-                item.label.ForeColor = Color.White;
-                item.label.TextAlign = ContentAlignment.MiddleLeft;
-                item.label.AutoSize = false;
-                item.label.Size = new Size(700, 30);
-                item.label.Font = _menuFont;
-                item.label.Location = new Point(200, 240 + (40 * menuIndex));
-                item.label.Parent = this;
-                this.Controls.Add(item.label);
-                menuIndex++;
-            }
-
-            RefreshMenu();
+            return defVerMenu;
         }
-
-        */
 
         private static void KillExplorer()
         {
@@ -391,7 +355,6 @@ namespace WACCALauncher
             //this.Hide();
             _gameProcess.Exited += QuitLauncher;
             _gameProcess.Start();
-            //Application.Exit();
         }
 
         public void LaunchGame(VersionType type)
@@ -578,41 +541,23 @@ namespace WACCALauncher
     public enum ConfigMenuAction
     {
         None = 0,
+        Menu,
         Command,
-        Submenu,
         VersionSelect,
         ItemSelect,
         Return
     }
 
-    public class ConfigMenuItem
+    public class ConfigMenu
     {
-        public readonly string Name;
+        public string Name;
+        public List<ConfigMenu> Items;
+        public ConfigMenu ParentMenu;
+
         private readonly ConfigMenuAction _action;
         private readonly Action _method;
-        private readonly ConfigMenu ParentMenu;
-        public ConfigMenu Submenu { get; private set; }
         private readonly List<string> _options;
         private readonly Version _version;
-
-        public ConfigMenuItem(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, ConfigMenu submenu = null, List<string> options = null, Version version = null) { 
-            this.Name = name;
-            this._action = action;
-
-            if (action == ConfigMenuAction.Command && method == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with Command type, but has no method associated.");
-            else if (action == ConfigMenuAction.Submenu && submenu == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with Submenu type, but has no submenu associated.");
-            else if (action == ConfigMenuAction.ItemSelect && options == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with ItemSelect type, but has no options associated.");
-            else if (action == ConfigMenuAction.VersionSelect && version == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with VersionSelect type, but has no version associated.");
-
-            this._method = method;
-            this.Submenu = submenu;
-            this._options = options;
-            this._version = version;
-        }
 
         public void Select(MainForm form)
         {
@@ -621,12 +566,9 @@ namespace WACCALauncher
                 // only works with static methods, why
                 this._method();
             }
-            else if (_action == ConfigMenuAction.Submenu && Submenu != null)
+            else if (_action == ConfigMenuAction.Menu && Items != null)
             {
-                Console.WriteLine("attempting submenu");
                 form._menuManager.NavigateToSubmenu(this);
-                //form.waccaListTest.Update();
-                //form.GenerateMenu(_submenu);
             }
             else if (_action == ConfigMenuAction.ItemSelect && _options != null)
             {
@@ -637,14 +579,30 @@ namespace WACCALauncher
             {
                 Console.WriteLine($"setting default version to {_version}");
                 form.SetDefaultVer(_version);
-                for (int i = 0; i < form.Versions.Count; i++)
-                {
-                    var name = form.Versions[i].GameVersion == VersionType.Custom ? form.Versions[i].CustomName : form.Versions[i].ToString();
-                    //menu[i].label.Text = $"({(form.Versions[i] == form.DefaultVer ? 'X' : ' ')}) {name}".ToUpper();
-                }
-                //form.RefreshMenu();
+                // TODO: this is kinda jank, fix this
+                form._menuManager.UpdateCurrentMenuItems(form.GetDefaultVersionMenu());
             }
-            else if (_action == ConfigMenuAction.Return) { form.MenuHide(); }
+            else if (_action == ConfigMenuAction.Return) { form.MenuBack(); }
+        }
+
+        public ConfigMenu(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenu> items = null, List<string> options = null, Version version = null)
+        {
+            this.Name = name;
+            this._action = action;
+
+            if (action == ConfigMenuAction.Menu && items == null)
+                throw new ArgumentException($"Menu item '{name}' was defined with Menu type, but has no menu associated.");
+            else if (action == ConfigMenuAction.Command && method == null)
+                throw new ArgumentException($"Menu item '{name}' was defined with Command type, but has no method associated.");
+            else if (action == ConfigMenuAction.ItemSelect && options == null)
+                throw new ArgumentException($"Menu item '{name}' was defined with ItemSelect type, but has no options associated.");
+            else if (action == ConfigMenuAction.VersionSelect && version == null)
+                throw new ArgumentException($"Menu item '{name}' was defined with VersionSelect type, but has no version associated.");
+
+            this.Items = items;
+            this._method = method;
+            this._options = options;
+            this._version = version;
         }
 
         public override string ToString()
@@ -653,22 +611,19 @@ namespace WACCALauncher
         }
     }
 
-    public class ConfigMenu
-    {
-        public List<ConfigMenuItem> Items;
-        private ConfigMenu ParentMenu;
-    }
-
     public class MenuManager
     {
         private ConfigMenu _rootMenu;
         private ConfigMenu _currentMenu;
-        public readonly string name;
+        private WaccaList _list;
 
-        public MenuManager(ConfigMenu root)
+        public MenuManager(ConfigMenu root, WaccaList list)
         {
             _rootMenu = root;
             _currentMenu = _rootMenu;
+            _list = list;
+            _list.AssignMenuManager(this);
+            UpdateList();
         }
 
         public ConfigMenu GetCurrentMenu()
@@ -676,49 +631,31 @@ namespace WACCALauncher
             return _currentMenu;
         }
 
-        public void NavigateToSubmenu(int index)
+        public void NavigateToSubmenu(ConfigMenu menu)
         {
-            if (index >= 0 && index < _currentMenu.Items.Count)
-            {
-                var selectedMenuItem = _currentMenu.Items[index];
-                if (selectedMenuItem.Submenu != null)
-                {
-                    selectedMenuItem.Submenu.ParentContainer = _currentMenu;
-                    _currentMenu = selectedMenuItem.Submenu;
-                }
-            }
+            menu.ParentMenu = _currentMenu;
+            _currentMenu = menu;
+            UpdateList();
         }
 
         public void NavigateBack()
         {
-            if (_currentContainer.ParentContainer != null)
-            {
-                _currentContainer = _currentContainer.ParentContainer;
-            }
+            _currentMenu = _currentMenu.ParentMenu;
+            UpdateList();
         }
 
-        /*
-
-        public void NavigateToSubMenu(string optionName)
+        public void UpdateCurrentMenuItems(List<ConfigMenu> items)
         {
-            if (optionName != string.Empty && optionName != null)
-            {
-                var selectedItem = currentMenu.Find(x => x.Name == optionName);
-                if (selectedItem.submenu != null && selectedItem.submenu.Count > 0)
-                {
-                    currentMenu = selectedItem.submenu;
-                }
-            }
+            _currentMenu.Items = items;
+            UpdateList(preserveIndex: true);
         }
 
-        //public void NavigateBack()
-        //{
-        //    if (currentMenu > 0 && currentMenu[0].Parent != null)
-        //    {
-        //        currentMenu = currentMenu[0].Parent.SubItems;
-        //    }
-        //}
-        */
+        private void UpdateList(bool preserveIndex = false)
+        {
+            var oldIndex = _list.SelectedIndex;
+            _list.Items.Clear();
+            _list.Items.AddRange(_currentMenu.Items.ToArray());
+            if (_list.Items.Count > 0) _list.SelectedIndex = preserveIndex ? oldIndex : 0;
+        }
     }
-
 }
