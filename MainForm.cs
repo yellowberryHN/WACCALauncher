@@ -317,14 +317,14 @@ namespace WACCALauncher
 
             defVerMenu.Add(new ConfigMenuItem("Return to settings", ConfigMenuAction.Return));
 
-            var mainMenu = new List<ConfigMenuItem>() {
+            var mainMenu = new ConfigMenu(new List<ConfigMenuItem>() {
                 new ConfigMenuItem("set default version", ConfigMenuAction.Submenu, submenu: defVerMenu),
                 new ConfigMenuItem("test VFD", ConfigMenuAction.Command, method: vfd_test),
                 new ConfigMenuItem("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
                 new ConfigMenuItem("launch game", ConfigMenuAction.Return)
-            };
+            });
 
-            _menuManager = new MenuManager(mainMenu, "Launcher Settings");
+            _menuManager = new MenuManager(mainMenu);
             waccaListTest.AssignMenuManager(_menuManager);
 
             _loadingLabel.Font = _menuFont;
@@ -590,13 +590,12 @@ namespace WACCALauncher
         public readonly string Name;
         private readonly ConfigMenuAction _action;
         private readonly Action _method;
-        public readonly List<ConfigMenuItem> submenu;
+        private readonly ConfigMenu ParentMenu;
+        public ConfigMenu Submenu { get; private set; }
         private readonly List<string> _options;
         private readonly Version _version;
 
-        public Label label;
-
-        public ConfigMenuItem(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenuItem> submenu = null, List<string> options = null, Version version = null) { 
+        public ConfigMenuItem(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, ConfigMenu submenu = null, List<string> options = null, Version version = null) { 
             this.Name = name;
             this._action = action;
 
@@ -610,19 +609,9 @@ namespace WACCALauncher
                 throw new ArgumentException($"Menu item '{name}' was defined with VersionSelect type, but has no version associated.");
 
             this._method = method;
-            this.submenu = submenu;
+            this.Submenu = submenu;
             this._options = options;
             this._version = version;
-        }
-
-        public void Activate()
-        {
-            label.ForeColor = Color.Red;
-        }
-
-        public void Deactivate()
-        {
-            label.ForeColor = Color.White;
         }
 
         public void Select(MainForm form)
@@ -632,11 +621,11 @@ namespace WACCALauncher
                 // only works with static methods, why
                 this._method();
             }
-            else if (_action == ConfigMenuAction.Submenu && submenu != null)
+            else if (_action == ConfigMenuAction.Submenu && Submenu != null)
             {
                 Console.WriteLine("attempting submenu");
-                form._menuManager.NavigateToSubMenu(Name);
-                form.waccaListTest.Update();
+                form._menuManager.NavigateToSubmenu(this);
+                //form.waccaListTest.Update();
                 //form.GenerateMenu(_submenu);
             }
             else if (_action == ConfigMenuAction.ItemSelect && _options != null)
@@ -664,21 +653,51 @@ namespace WACCALauncher
         }
     }
 
+    public class ConfigMenu
+    {
+        public List<ConfigMenuItem> Items;
+        private ConfigMenu ParentMenu;
+    }
+
     public class MenuManager
     {
-        private List<ConfigMenuItem> currentMenu;
+        private ConfigMenu _rootMenu;
+        private ConfigMenu _currentMenu;
         public readonly string name;
 
-        public MenuManager(List<ConfigMenuItem> menu, string menuName)
+        public MenuManager(ConfigMenu root)
         {
-            currentMenu = menu;
-            name = menuName;
+            _rootMenu = root;
+            _currentMenu = _rootMenu;
         }
 
-        public List<ConfigMenuItem> GetCurrentMenu()
+        public ConfigMenu GetCurrentMenu()
         {
-            return currentMenu;
+            return _currentMenu;
         }
+
+        public void NavigateToSubmenu(int index)
+        {
+            if (index >= 0 && index < _currentMenu.Items.Count)
+            {
+                var selectedMenuItem = _currentMenu.Items[index];
+                if (selectedMenuItem.Submenu != null)
+                {
+                    selectedMenuItem.Submenu.ParentContainer = _currentMenu;
+                    _currentMenu = selectedMenuItem.Submenu;
+                }
+            }
+        }
+
+        public void NavigateBack()
+        {
+            if (_currentContainer.ParentContainer != null)
+            {
+                _currentContainer = _currentContainer.ParentContainer;
+            }
+        }
+
+        /*
 
         public void NavigateToSubMenu(string optionName)
         {
@@ -699,6 +718,7 @@ namespace WACCALauncher
         //        currentMenu = currentMenu[0].Parent.SubItems;
         //    }
         //}
+        */
     }
 
 }
