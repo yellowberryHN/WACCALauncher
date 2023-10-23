@@ -12,6 +12,7 @@ using IniParser.Model;
 using SharpDX.DirectInput;
 using System.Linq;
 using System.Reflection;
+using WACCA;
 
 namespace WACCALauncher
 {
@@ -43,6 +44,7 @@ namespace WACCALauncher
         private bool _gameRunning = false;
 
         public MenuManager _menuManager;
+        private VFD _vfd;
 
         public MainForm()
         {
@@ -218,15 +220,16 @@ namespace WACCALauncher
 
         private static void vfd_test()
         {
-            var vfd = new WaccaVFD();
-            vfd.Power(true);
-            vfd.Clear();
-            vfd.Brightness(WaccaVFD.bright.BRIGHT_50);
-            vfd.Cursor(0, 0);
+            var vfd = new VFD();
+            vfd.Reset();
+            vfd.PowerOn();
+            vfd.Brightness(VFD.Bright._50);
             vfd.CanvasShift(0);
+            vfd.Cursor(0, 0);
+            vfd.FontSize(VFD.Font._16_16);
             vfd.Write("Testing VFD!");
-            vfd.Cursor(0, 16);
-            vfd.ScrollSpeed(2);
+            vfd.Cursor(0, 2);
+            vfd.ScrollSpeed(15);
             vfd.ScrollText(Math.PI.ToString() + " ");
             vfd.ScrollStart();
         }
@@ -266,8 +269,8 @@ namespace WACCALauncher
             LoadVersionsFromConfig();
             
             var mainMenu = new ConfigMenu("Launcher Settings", items: new List<ConfigMenu>() {
+                new ConfigMenu("one-time launch", ConfigMenuAction.Menu, items: GetOTLMenu()),
                 new ConfigMenu("set default version", ConfigMenuAction.Menu, items: GetDefaultVersionMenu()),
-                new ConfigMenu("test VFD", ConfigMenuAction.Command, method: vfd_test),
                 new ConfigMenu("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
                 new ConfigMenu("launch game", ConfigMenuAction.Return)
             });
@@ -285,12 +288,27 @@ namespace WACCALauncher
             foreach (var ver in Versions)
             {
                 var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
-                defVerMenu.Add(new ConfigMenu($"({(ver == DefaultVer ? 'X' : ' ')}) {name}", ConfigMenuAction.VersionSelect, version: ver));
+                defVerMenu.Add(new ConfigMenu($"({(ver == DefaultVer ? 'X' : ' ')}) {name}", ConfigMenuAction.VersionSelect, version: ver, defVer: true));
             }
 
             defVerMenu.Add(new ConfigMenu("Return to settings", ConfigMenuAction.Return));
 
             return defVerMenu;
+        }
+
+        public List<ConfigMenu> GetOTLMenu()
+        {
+            var otlMenu = new List<ConfigMenu>();
+
+            foreach (var ver in Versions)
+            {
+                var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
+                otlMenu.Add(new ConfigMenu(name, ConfigMenuAction.VersionSelect, version: ver, defVer: false));
+            }
+
+            otlMenu.Add(new ConfigMenu("Return to settings", ConfigMenuAction.Return));
+
+            return otlMenu;
         }
 
         private static void KillExplorer()
@@ -304,7 +322,7 @@ namespace WACCALauncher
             if (processes.Length == 0) Process.Start("explorer.exe");
         }
 
-        private void LaunchGame(Version version)
+        public void LaunchGame(Version version)
         {
             Console.WriteLine("launching game");
             _gameProcess.StartInfo.FileName = version.BatchPath;
@@ -438,6 +456,11 @@ namespace WACCALauncher
             Controls.Add(errorLabel);
         }
 
+        public void StopTimer()
+        {
+            _delayTimer.Stop();
+        }
+
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
             OpenExplorer();
@@ -452,6 +475,7 @@ namespace WACCALauncher
         Lily,
         Lily_R,
         Reverse,
+        Offline,
         Custom = 10
     }
 
@@ -516,6 +540,7 @@ namespace WACCALauncher
         private readonly Action _method;
         private readonly List<string> _options;
         private readonly Version _version;
+        private readonly bool _defVer;
 
         public void Select(MainForm form)
         {
@@ -535,15 +560,26 @@ namespace WACCALauncher
             }
             else if (_action == ConfigMenuAction.VersionSelect && _version != null)
             {
-                Console.WriteLine($"setting default version to {_version}");
-                form.SetDefaultVer(_version);
-                // TODO: this is kinda jank, fix this
-                form._menuManager.UpdateCurrentMenuItems(form.GetDefaultVersionMenu());
+                if(_defVer)
+                {
+                    Console.WriteLine($"setting default version to {_version}");
+                    form.SetDefaultVer(_version);
+                    // TODO: this is kinda jank, fix this
+                    form._menuManager.UpdateCurrentMenuItems(form.GetDefaultVersionMenu());
+                }
+                else
+                {
+                    Console.WriteLine($"one-time launch for {_version}");
+                    form.MenuHide();
+                    form.StopTimer();
+                    form.LaunchGame(_version);
+                }
+                
             }
             else if (_action == ConfigMenuAction.Return) { form._menuManager.MenuBack(); }
         }
 
-        public ConfigMenu(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenu> items = null, List<string> options = null, Version version = null)
+        public ConfigMenu(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenu> items = null, List<string> options = null, Version version = null, bool defVer = false)
         {
             this.Name = name;
             this._action = action;
@@ -561,6 +597,7 @@ namespace WACCALauncher
             this._method = method;
             this._options = options;
             this._version = version;
+            this._defVer = defVer;
         }
 
         public override string ToString()
