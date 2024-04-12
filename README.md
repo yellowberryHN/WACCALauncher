@@ -50,7 +50,6 @@ that looks something like this:
 name = WACCA Omega Supermix Deluxe
 path = C:\WACCA\Versions\Omega Supermix Deluxe
 type = reverse
-
 ```
 
 `type` must match one of the versions listed above, it will likely be `reverse` unless specified.

@@ -42,6 +42,7 @@ namespace WACCALauncher
 
         private readonly Process _gameProcess = new Process();
         private bool _gameRunning = false;
+        public bool AutoLaunch = true;
 
         public MenuManager _menuManager;
         private VFD _vfd;
@@ -90,12 +91,6 @@ namespace WACCALauncher
             _menuFont = new Font(_fonts.Families[0], 22.5F);
         }
 
-        private bool[] _buttonStates;
-        private bool[] _lastButtonStates = new bool[4];
-        
-        public bool _autoLaunch = true;
-        private int _currentMenuItem;
-
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             if (!_gameRunning)
@@ -105,7 +100,7 @@ namespace WACCALauncher
                 else if (keyData == Keys.Enter) { _menuManager.MenuSelect(); return true; }
                 else if (keyData == Keys.Escape)
                 {
-                    if (_autoLaunch) MenuShow();
+                    if (AutoLaunch) MenuShow();
                     else _menuManager.MenuBack();
                     return true;
                 }
@@ -114,23 +109,8 @@ namespace WACCALauncher
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        /*
-        private void KeyPressed(object sender, KeyPressEventArgs e)
-        {
-            if (_gameRunning) return;
-            switch ((Keys)e.KeyChar)
-            {
-                case Keys.Escape:
-                    if (_autoLaunch) MenuShow();
-                    else MenuBack();
-                    e.Handled = true;
-                    break;
-                case Keys.Enter:
-                    MenuSelect();
-                    e.Handled = true;
-                    break;
-            }
-        }*/
+        private bool[] _buttonStates;
+        private bool[] _lastButtonStates = new bool[4];
 
         private async void Tick(object sender, EventArgs e)
         {
@@ -180,7 +160,7 @@ namespace WACCALauncher
                 if (_buttonStates[9] && !_lastButtonStates[9])
                 {
                     Console.WriteLine("test button");
-                    if(_autoLaunch)
+                    if(AutoLaunch)
                     {
                         MenuShow();
                     }
@@ -197,14 +177,17 @@ namespace WACCALauncher
             _loadingLabel.Hide();
             menuLabel.Show();
             waccaListTest.Visible = waccaListTest.Enabled = true;
-            _autoLaunch = false;
+            AutoLaunch = false;
         }
 
         public void MenuHide()
         {
-            _autoLaunch = true;
+            AutoLaunch = true;
             menuLabel.Hide();
             waccaListTest.Visible = waccaListTest.Enabled = false;
+
+            if (_hasError) return;
+
             _loadingLabel.Show();
 
             _delayTimer = new System.Timers.Timer(5000);
@@ -316,6 +299,11 @@ namespace WACCALauncher
             Process.Start(@"C:\Windows\System32\taskkill.exe", @"/F /IM explorer.exe");
         }
 
+        private static void KillAMDaemon()
+        {
+            Process.Start(@"C:\Windows\System32\taskkill.exe", @"/F /IM amdaemon.exe");
+        }
+
         private static void OpenExplorer()
         {
             var processes = Process.GetProcessesByName("explorer");
@@ -346,6 +334,7 @@ namespace WACCALauncher
         private void QuitLauncher(Object source, EventArgs e)
         {
             // Only exit after the game has closed, so that the launcher doesn't keep opening when configured as a shell
+            KillAMDaemon(); // Just in case it gets left open
             Application.Exit();
         }
 
@@ -367,9 +356,14 @@ namespace WACCALauncher
                 try
                 {
                     var version = new Version(iniPath, item);
-                    if (!version.HasSegatools)
+                    if (!version.HasSegatools && version.GameVersion != VersionType.Saturn)
                     {
                         DisplayError("Segatools missing", $"Ensure segatools is present in the bin folder ({version})");
+                        return;
+                    }
+                    if (version.BatchPath == String.Empty && version.GameVersion == VersionType.Saturn)
+                    {
+                        DisplayError("Saturn missing", $"Check path, cannot find saturn data");
                         return;
                     }
                     Versions.Add(version);
@@ -433,8 +427,11 @@ namespace WACCALauncher
             _parser.WriteFile("wacca.ini", _config);
         }
 
+        private bool _hasError = false;
+
         private void DisplayError(string error, string description = "")
         {
+            _hasError = true;
             _delayTimer.Stop();
             _loadingLabel?.Hide();
 
@@ -476,7 +473,8 @@ namespace WACCALauncher
         Lily_R,
         Reverse,
         Offline,
-        Custom = 10
+        Custom = 10,
+        Saturn
     }
 
     public class Version
@@ -500,10 +498,17 @@ namespace WACCALauncher
             if (customName != string.Empty) this.CustomName = customName; 
             var binPath = Path.Combine(_dir.FullName, "bin");
             
-            if (CheckForSegatools(binPath))
+            if (version != VersionType.Saturn)
             {
-                HasSegatools = true;
-                BatchPath = Path.Combine(binPath, "start.bat");
+                if (CheckForSegatools(binPath))
+                {
+                    HasSegatools = true;
+                    BatchPath = Path.Combine(binPath, "start.bat");
+                }
+            }
+            else if (CheckForSaturn(path))
+            {
+                BatchPath = Path.Combine(path, "SaturnGame.exe");
             }
         }
 
@@ -512,6 +517,12 @@ namespace WACCALauncher
             return File.Exists(Path.Combine(path, "segatools.ini")) &&
                    File.Exists(Path.Combine(path, "mercuryhook.dll")) &&
                    File.Exists(Path.Combine(path, "inject.exe"));
+        }
+
+        private bool CheckForSaturn(string path)
+        {
+            return Directory.Exists(Path.Combine(path, "SaturnGame_data")) &&
+                   File.Exists(Path.Combine(path, "SaturnGame.exe"));
         }
 
         public override string ToString()
@@ -626,7 +637,7 @@ namespace WACCALauncher
         public void CursorUp()
         {
             // move cursor up
-            if (_form._autoLaunch) return;
+            if (_form.AutoLaunch) return;
 
             var idx = ((_list.SelectedIndex - 1) + _list.Items.Count) % _list.Items.Count;
             _list.SelectedIndex = idx;
@@ -635,7 +646,7 @@ namespace WACCALauncher
         public void CursorDown()
         {
             // move cursor down
-            if (_form._autoLaunch) return;
+            if (_form.AutoLaunch) return;
 
             var idx = (_list.SelectedIndex + 1) % _list.Items.Count;
             _list.SelectedIndex = idx;
@@ -644,7 +655,7 @@ namespace WACCALauncher
         public void MenuBack()
         {
             // back from current menu item
-            if (_form._autoLaunch) return;
+            if (_form.AutoLaunch) return;
 
             Console.WriteLine("MenuBack");
             if (_form._menuManager.GetCurrentMenu().ParentMenu == null)
@@ -655,7 +666,7 @@ namespace WACCALauncher
         public void MenuSelect()
         {
             // select menu item
-            if (_form._autoLaunch) return;
+            if (_form.AutoLaunch) return;
 
             Console.WriteLine("MenuSelect");
             (_list.SelectedItem as ConfigMenu).Select(_form);

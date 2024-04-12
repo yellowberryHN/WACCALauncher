@@ -30,7 +30,7 @@ namespace WACCALauncher
             return BuildNumber == 14393 && ReleaseId == 1607;
         }
 
-        public static bool IsWACCA()
+        public static bool IsCorrectEnv()
         {
             return IsCorrectRes() && IsCorrectVer();
         }
@@ -46,8 +46,10 @@ namespace WACCALauncher
                 CurrentScreen = Screen.AllScreens[1];
 
             // when running as system shell, we must set our working directory manually
-            if(Directory.GetCurrentDirectory() == Environment.GetFolderPath(Environment.SpecialFolder.System))
-                Directory.SetCurrentDirectory(Path.GetPathRoot(Assembly.GetExecutingAssembly().Location));
+            var whereAmI = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+            if (Directory.GetCurrentDirectory() != whereAmI)
+                Directory.SetCurrentDirectory(whereAmI);
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
