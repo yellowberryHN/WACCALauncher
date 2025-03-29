@@ -4,171 +4,206 @@ using System.Drawing;
 using System.IO;
 using System.Text;
 using System.Windows.Forms;
-using System.Drawing.Text;
 using System.Timers;
 using System.Diagnostics;
-using IniParser;
-using IniParser.Model;
 using SharpDX.DirectInput;
-using System.Linq;
-using System.Reflection;
-using WACCA;
+using Newtonsoft.Json;
 
 namespace WACCALauncher
 {
+    public enum LauncherState
+    {
+        Launching,
+        Updating,
+        GameStarting,
+        GameRunning,
+        InMenu,
+        GameClosed,
+        Error
+    }
+
     public partial class MainForm : Form
     {
         private static System.Timers.Timer _delayTimer;
         private readonly System.Windows.Forms.Timer _t = new System.Windows.Forms.Timer();
 
-        [System.Runtime.InteropServices.DllImport("gdi32.dll")]
-        private static extern IntPtr AddFontMemResourceEx(IntPtr pbFont, uint cbFont,
-            IntPtr pdv, [System.Runtime.InteropServices.In] ref uint pcFonts);
+        public LauncherState _state;
 
-        private readonly PrivateFontCollection _fonts = new PrivateFontCollection();
-        private Label _loadingLabel;
-        private Label _versionLabel;
+        private static Font _menuFont;
 
-        private Font _menuFont;
+        private static string _loadingText = "LOADING";
+
+        private static Label _loadingLabel = new Label();
+        private static Label _versionLabel = new Label();
+        private static Label _buttonLabel = new Label();
 
         private readonly DirectInput _input = new DirectInput();
         private Joystick _ioBoard;
 
-        public readonly List<Version> Versions = new List<Version>();
-        public Version DefaultVer;
+        public static readonly List<Profile> Profiles = new List<Profile>();
+        public static Profile DefaultProfile;
+        public Profile SelectedProfile;
 
-        private readonly IniData _config;
-        private readonly FileIniDataParser _parser = new FileIniDataParser();
+        private bool _skipUpdater = false;
 
         private readonly Process _gameProcess = new Process();
-        private bool _gameRunning = false;
-        public bool AutoLaunch = true;
+        private readonly Process _amdaemonProcess = new Process();
 
-        public MenuManager _menuManager;
-        private VFD _vfd;
+        internal MenuManager _menuManager;
+
+        internal LauncherSettings settings;
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
 
         public MainForm()
         {
+            _menuFont = FontLoader.LoadFont();
+
             InitializeComponent();
 
+            // start input timer
             _t.Tick += Tick;
             _t.Interval = 20;
             _t.Start();
 
-            _delayTimer = new System.Timers.Timer(5000);
-            _delayTimer.Elapsed += LaunchDefault;
-
-            _delayTimer.Enabled = true;
-
-            // Load embedded font into memory
-
-            LoadFont();
-
-            try
+            // if we're running on a vertical monitor, compensate for ring offset
+            if (Program.IsCorrectRes())
             {
-                _config = _parser.ReadFile("wacca.ini");
-            }
-            catch (IniParser.Exceptions.ParsingException)
-            {
-                DisplayError("Config error", "wacca.ini could not be read, check for errors");
+                var bounds = Program.CurrentScreen.Bounds;
+                SetBounds(bounds.X, bounds.Y + 362, Width, Height);
             }
 
-            if (!Program.IsCorrectRes()) return;
-            var bounds = Program.CurrentScreen.Bounds;
-            this.SetBounds(bounds.X, bounds.Y + 362, Width, Height);
+            // bind game exit to be handled properly (ONLY ONCE)
+            _gameProcess.Exited += HandleGameClosed;
+
+            // timer started before we check profiles, it gets stopped when errors are thrown
+            StartLaunchTimer();
         }
 
-        private void LoadFont()
+        public void UpdateLoadingText()
         {
-            var fontData = Properties.Resources.menufont;
-            var fontPtr = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(fontData.Length);
-            System.Runtime.InteropServices.Marshal.Copy(fontData, 0, fontPtr, fontData.Length);
-            uint dummy = 0;
-            _fonts.AddMemoryFont(fontPtr, Properties.Resources.menufont.Length);
-            AddFontMemResourceEx(fontPtr, (uint)Properties.Resources.menufont.Length, IntPtr.Zero, ref dummy);
-            System.Runtime.InteropServices.Marshal.FreeCoTaskMem(fontPtr);
-
-            _menuFont = new Font(_fonts.Families[0], 22.5F);
+            _loadingLabel.Text = string.Join("",_loadingText,_skipUpdater ? "!!!" : "...");
         }
 
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (!_gameRunning)
+            if (_state == LauncherState.Launching || _state == LauncherState.InMenu)
             {
-                if (keyData == Keys.Up) { _menuManager.CursorUp(); return true; }
-                else if (keyData == Keys.Down) { _menuManager.CursorDown(); return true; }
-                else if (keyData == Keys.Enter) { _menuManager.MenuSelect(); return true; }
-                else if (keyData == Keys.Escape)
+                switch(keyData)
                 {
-                    if (AutoLaunch) MenuShow();
-                    else _menuManager.MenuBack();
-                    return true;
+                    case Keys.Up:
+                        _menuManager.CursorUp();
+                        return true;
+                    case Keys.Down:
+                        _menuManager.CursorDown();
+                        return true;
+                    case Keys.Enter:
+                        _menuManager.MenuSelect();
+                        return true;
+                    case Keys.Escape:
+                        if (_state == LauncherState.InMenu) _menuManager.MenuBack();
+                        else MenuShow();
+
+                        return true;
                 }
+            }
+            else if (_state == LauncherState.Error && keyData == Keys.Escape)
+            {
+                Application.Exit();
+                return true;
             }
 
             return base.ProcessCmdKey(ref msg, keyData);
         }
 
-        private bool[] _buttonStates;
-        private bool[] _lastButtonStates = new bool[4];
-
-        private async void Tick(object sender, EventArgs e)
+        private bool ButtonPressed(JoystickUpdate state, int button)
         {
+            return state.Offset == (JoystickOffset.Buttons0 + button) && state.Value > 0;
+        }
+
+        private bool ButtonReleased(JoystickUpdate state, int button)
+        {
+            return state.Offset == (JoystickOffset.Buttons0 + button) && state.Value == 0;
+        }
+
+        private bool ButtonHeld(Joystick joystick, int button)
+        {
+            return joystick.GetCurrentState().Buttons[button];
+        }
+
+        private void Tick(object sender, EventArgs e)
+        {
+            UpdateLoadingText();
+
+            if (_state != LauncherState.Launching && _state != LauncherState.InMenu) return;
+
             var gamepads = _input.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AttachedOnly);
 
-            try
-            {
-                _gameRunning = _gameProcess.StartTime != null;
-            }
-            catch (InvalidOperationException) {}
-
+            // set up IO board controls
             if (_ioBoard == null && gamepads.Count > 0)
             {
-                Console.WriteLine("gamepad detected");
                 // it will be the only gamepad on the system
                 var guid = gamepads[0].InstanceGuid;
                 _ioBoard = new Joystick(_input, guid);
+                _ioBoard.Properties.BufferSize = 128;
                 _ioBoard.Acquire();
             }
-            else if (gamepads.Count > 0 && !_gameRunning)
+            else if (gamepads.Count > 0)
             {
                 _ioBoard.Poll();
-                _buttonStates = _ioBoard.GetCurrentState().Buttons;
+                var padStates = _ioBoard.GetBufferedData();
 
-                // vol down
-                if (_buttonStates[0] && !_lastButtonStates[0])
+                foreach (var padState in padStates)
                 {
-                    Console.WriteLine("vol down");
-                    _menuManager.CursorDown();
-                }
-
-                // vol up
-                if (_buttonStates[1] && !_lastButtonStates[1])
-                {
-                    Console.WriteLine("vol up");
-                    _menuManager.CursorUp();
-                }
-
-                // service
-                if (_buttonStates[6] && !_lastButtonStates[6])
-                {
-                    Console.WriteLine("service button");
-                    _menuManager.CursorDown();
-                }
-
-                // test
-                if (_buttonStates[9] && !_lastButtonStates[9])
-                {
-                    Console.WriteLine("test button");
-                    if(AutoLaunch)
+                    if(padState.Offset >= JoystickOffset.Buttons0
+                    && padState.Offset < JoystickOffset.Buttons10)
                     {
-                        MenuShow();
-                    }
-                    else _menuManager.MenuSelect();
-                }
+                        var pressed = padState.Value > 0;
 
-                _lastButtonStates = _buttonStates;
+                        switch (_state)
+                        {
+                            case LauncherState.InMenu:
+                                // vol down
+                                if (ButtonPressed(padState, 0)) _menuManager.CursorDown();
+
+                                // vol up
+                                if (ButtonPressed(padState, 1)) _menuManager.CursorUp();
+
+                                // service
+                                if (ButtonPressed(padState, 6)) _menuManager.CursorDown();
+
+                                // test
+                                if (ButtonPressed(padState, 9)) _menuManager.MenuSelect();
+
+                                break;
+                            case LauncherState.Launching:
+                                // vol up (held)
+                                _skipUpdater = ButtonHeld(_ioBoard, 1);
+
+                                // test
+                                if (ButtonPressed(padState, 9)) MenuShow();
+
+                                break;
+                            case LauncherState.Error:
+                                // test
+                                if (ButtonPressed(padState, 9)) Application.Exit();
+
+                                break;
+                        }
+                    }
+                }
             }
+        }
+
+        private void StartLaunchTimer()
+        {
+            if (_state == LauncherState.Launching && _delayTimer != null && _delayTimer.Enabled) return;
+            _state = LauncherState.Launching;
+            _delayTimer = new System.Timers.Timer(5000);
+            _delayTimer.Elapsed += LaunchDefault;
+
+            _delayTimer.Enabled = true;
         }
 
         public void MenuShow()
@@ -176,24 +211,25 @@ namespace WACCALauncher
             _delayTimer.Stop();
             _loadingLabel.Hide();
             menuLabel.Show();
-            waccaListTest.Visible = waccaListTest.Enabled = true;
-            AutoLaunch = false;
+            _buttonLabel.Show();
+            menuListBox.Visible = menuListBox.Enabled = true;
+
+            _state = LauncherState.InMenu;
         }
 
         public void MenuHide()
         {
-            AutoLaunch = true;
             menuLabel.Hide();
-            waccaListTest.Visible = waccaListTest.Enabled = false;
+            _buttonLabel.Hide();
+            menuListBox.Visible = menuListBox.Enabled = false;
 
-            if (_hasError) return;
+            _menuManager.ReturnToRoot();
+
+            if (_state == LauncherState.Error) return;
 
             _loadingLabel.Show();
 
-            _delayTimer = new System.Timers.Timer(5000);
-            _delayTimer.Elapsed += LaunchDefault;
-
-            _delayTimer.Enabled = true;
+            StartLaunchTimer();
         }
 
         public void MenuUpdateLabel(string text)
@@ -201,40 +237,23 @@ namespace WACCALauncher
             menuLabel.Text = text.ToUpper();
         }
 
-        private static void vfd_test()
+        private void MainForm_Load(object sender, EventArgs e)
         {
-            var vfd = new VFD();
-            vfd.Reset();
-            vfd.PowerOn();
-            vfd.Brightness(VFD.Bright._50);
-            vfd.CanvasShift(0);
-            vfd.Cursor(0, 0);
-            vfd.FontSize(VFD.Font._16_16);
-            vfd.Write("Testing VFD!");
-            vfd.Cursor(0, 2);
-            vfd.ScrollSpeed(15);
-            vfd.ScrollText(Math.PI.ToString() + " ");
-            vfd.ScrollStart();
-        }
-
-        private void Form1_Load(object sender, EventArgs e)
-        {
-            _loadingLabel = new Label();
-            waccaListTest.Font = _menuFont;
+            menuListBox.Font = _menuFont;
+            
             SuspendLayout();
 
             _loadingLabel.Font = _menuFont;
-            _loadingLabel.ForeColor = Program.IsCorrectVer() ? Color.White : Color.DarkOrange;
-            _loadingLabel.Location = new Point(458, 525);
+            _loadingLabel.ForeColor = Program.IsRecommendedWinVer() ? Color.White : Color.DarkOrange;
+            _loadingLabel.BackColor = Color.Transparent;
+            _loadingLabel.Location = new Point(0, 525);
             _loadingLabel.Name = "loadingLabel";
-            _loadingLabel.Size = new Size(164, 30);
+            _loadingLabel.Size = new Size(Width, 30);
             _loadingLabel.TabIndex = 0;
             _loadingLabel.Text = "LOADING...";
             _loadingLabel.TextAlign = ContentAlignment.MiddleCenter;
 
-            this.Controls.Add(_loadingLabel);
-
-            _versionLabel = new Label();
+            Controls.Add(_loadingLabel);
 
             _versionLabel.Font = _menuFont;
             _versionLabel.ForeColor = Color.FromArgb(50,50,50);
@@ -242,467 +261,457 @@ namespace WACCALauncher
             _versionLabel.Name = "versionLabel";
             _versionLabel.Size = new Size(164, 30);
             _versionLabel.TabIndex = 0;
-            _versionLabel.Text = Assembly.GetEntryAssembly().GetName().Version.ToString();
+            _versionLabel.Text = System.Reflection.Assembly.GetEntryAssembly().GetName().Version.ToString();
             _versionLabel.TextAlign = ContentAlignment.MiddleCenter;
 
-            Console.WriteLine(_versionLabel.Text);
+            Controls.Add(_versionLabel);
 
-            this.Controls.Add(_versionLabel);
+            _buttonLabel.Font = _menuFont;
+            _buttonLabel.ForeColor = Color.White;
+            _buttonLabel.BackColor = Color.Transparent;
+            _buttonLabel.Location = new Point(0, 900);
+            _buttonLabel.Name = "buttonLabel";
+            _buttonLabel.Size = new Size(Width, 60);
+            _buttonLabel.TabIndex = 0;
+            _buttonLabel.Text = "Press SERVICE button to select\nPress TEST button to decide".ToUpper();
+            _buttonLabel.TextAlign = ContentAlignment.MiddleCenter;
+            _buttonLabel.Visible = false;
 
-            LoadVersionsFromConfig();
-            
-            var mainMenu = new ConfigMenu("Launcher Settings", items: new List<ConfigMenu>() {
-                new ConfigMenu("one-time launch", ConfigMenuAction.Menu, items: GetOTLMenu()),
-                new ConfigMenu("set default version", ConfigMenuAction.Menu, items: GetDefaultVersionMenu()),
-                new ConfigMenu("exit to windows", ConfigMenuAction.Command, method: Application.Exit),
-                new ConfigMenu("launch game", ConfigMenuAction.Return)
-            });
+            Controls.Add(_buttonLabel);
 
-            _menuManager = new MenuManager(mainMenu, waccaListTest, this);
-
-            _loadingLabel.Font = _menuFont;
             menuLabel.Font = _menuFont;
+
+            ReloadConfig();
+
+            var mainMenu = GetMenu();
+
+            #if DEBUG
+                mainMenu.Items.Add(GetDebugMenu());
+            #endif
+
+            _menuManager = new MenuManager(mainMenu, menuListBox, this);
         }
 
-        public List<ConfigMenu> GetDefaultVersionMenu()
+        private void ReloadConfig()
         {
-            var defVerMenu = new List<ConfigMenu>();
+            DefaultProfile = null;
+            Profiles.Clear();
 
-            foreach (var ver in Versions)
-            {
-                var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
-                defVerMenu.Add(new ConfigMenu($"({(ver == DefaultVer ? 'X' : ' ')}) {name}", ConfigMenuAction.VersionSelect, version: ver, defVer: true));
-            }
+            LoadLauncherSettings();
 
-            defVerMenu.Add(new ConfigMenu("Return to settings", ConfigMenuAction.Return));
+            LoadProfiles();
 
-            return defVerMenu;
+            SetDefaultProfile();
         }
 
-        public List<ConfigMenu> GetOTLMenu()
+        private Menu GetMenu()
         {
-            var otlMenu = new List<ConfigMenu>();
-
-            foreach (var ver in Versions)
+            return new Menu("launcher menu", main: true, items: new List<IMenuItem>()
             {
-                var name = ver.GameVersion == VersionType.Custom ? ver.CustomName : ver.ToString();
-                otlMenu.Add(new ConfigMenu(name, ConfigMenuAction.VersionSelect, version: ver, defVer: false));
+                new ProfileMenu("one-time launch", type: ProfileMenuType.OneTimeLaunch),
+                new ProfileMenu("set default profile", type: ProfileMenuType.SetDefault),
+                new MenuSeparator(),
+                new Menu("cab management", items: new List<IMenuItem>() {
+                    new MenuAction("launch file explorer", OpenFileExplorer),
+                    new MenuAction("reload configs", ReloadConfig),
+                    new MenuAction("exit to windows", Application.Exit),
+                    new MenuSeparator(),
+                    new MenuAction("reboot cab (!)", RebootCab)
+                }),
+                new MenuSeparator(),
+                new MenuReturn("launch game")
+            });
+        }
+
+        private Menu GetDebugMenu()
+        {
+            return new Menu("Debug Menu", items: new List<IMenuItem>() {
+                new MenuAction("start desktop", OpenDesktop),
+                new Menu("nesting 1", items: new List<IMenuItem>()
+                {
+                    new Menu("nesting 11", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 111"),
+                        new MenuAction("nesting 112"),
+                        new MenuAction("nesting 113")
+                    }),
+                    new Menu("nesting 12", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 121"),
+                        new MenuAction("nesting 122"),
+                        new MenuAction("nesting 123")
+                    }),
+                    new Menu("nesting 13", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 131"),
+                        new MenuAction("nesting 132"),
+                        new MenuAction("nesting 133")
+                    })
+                }),
+                new Menu("nesting 2", items: new List<IMenuItem>()
+                {
+                    new Menu("nesting 21", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 211"),
+                        new MenuAction("nesting 212"),
+                        new MenuAction("nesting 213")
+                    }),
+                    new Menu("nesting 22", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 221"),
+                        new MenuAction("nesting 222"),
+                        new MenuAction("nesting 223")
+                    }),
+                    new Menu("nesting 23", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 231"),
+                        new MenuAction("nesting 232"),
+                        new MenuAction("nesting 233")
+                    })
+                }),
+                new Menu("nesting 3", items: new List<IMenuItem>()
+                {
+                    new Menu("nesting 31", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 311"),
+                        new MenuAction("nesting 312"),
+                        new MenuAction("nesting 313")
+                    }),
+                    new Menu("nesting 32", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 321"),
+                        new MenuAction("nesting 322"),
+                        new MenuAction("nesting 323")
+                    }),
+                    new Menu("nesting 33", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("nesting 331"),
+                        new MenuAction("nesting 332"),
+                        new MenuAction("nesting 333")
+                    })
+                }),
+                GenerateLargeMenu("Large Menu", 50)
+            });
+        }
+
+        private Menu GenerateLargeMenu(string name, int count)
+        {
+            var menu = new Menu(name);
+
+            menu.Items.Add(GenerateLargeBigTextMenu("really big text", 50));
+
+            for (int i = 0; i < count; i++)
+            {
+                menu.Items.Add(new MenuAction($"{name} {i}"));
             }
 
-            otlMenu.Add(new ConfigMenu("Return to settings", ConfigMenuAction.Return));
+            return menu;
+        }
 
-            return otlMenu;
+        private Menu GenerateLargeBigTextMenu(string name, int count)
+        {
+            var menu = new Menu(name);
+
+            for (int i = 0; i < count; i++)
+            {
+                menu.Items.Add(new MenuAction($"super ultra omega mega epic swag gaming WWWWWW {i}"));
+            }
+
+            return menu;
         }
 
         private static void KillExplorer()
         {
-            Process.Start(@"C:\Windows\System32\taskkill.exe", @"/F /IM explorer.exe");
+            Process.Start("taskkill.exe", "/F /IM explorer.exe");
         }
 
         private static void KillAMDaemon()
         {
-            Process.Start(@"C:\Windows\System32\taskkill.exe", @"/F /IM amdaemon.exe");
+            Process.Start("taskkill.exe", "/F /IM amdaemon.exe");
         }
 
-        private static void OpenExplorer()
+        // i love hacks
+        private static void OpenDesktop()
         {
-            var processes = Process.GetProcessesByName("explorer");
-            if (processes.Length == 0) Process.Start("explorer.exe");
-        }
-
-        public void LaunchGame(Version version)
-        {
-            Console.WriteLine("launching game");
-            _gameProcess.StartInfo.FileName = version.BatchPath;
-            _gameProcess.EnableRaisingEvents = true;
-
-            //this.Hide();
-            _gameProcess.Exited += QuitLauncher;
-            _gameProcess.Start();
-        }
-
-        public void LaunchGame(VersionType type)
-        {
-            LaunchGame(Versions.Find(x => x.GameVersion == type));
-        }
-
-        public void LaunchGame(string gameId)
-        {
-            LaunchGame(Versions.Find(x => x.GameId == gameId));
-        }
-
-        private void QuitLauncher(Object source, EventArgs e)
-        {
-            // Only exit after the game has closed, so that the launcher doesn't keep opening when configured as a shell
-            KillAMDaemon(); // Just in case it gets left open
-            Application.Exit();
-        }
-
-        private void LaunchDefault(Object source, ElapsedEventArgs e)
-        {
-            _delayTimer.Stop();
-            KillExplorer();
-            LaunchGame(DefaultVer);
-        }
-
-        private void LoadVersionsFromConfig()
-        {
-            if (_config == null) return;
-            foreach (VersionType item in (VersionType[])Enum.GetValues(typeof(VersionType)))
+            if(FindWindow("Progman", null) == IntPtr.Zero)
             {
-                var iniPath = _config["versions"][item.ToString().ToLower()];
-                if (string.IsNullOrEmpty(iniPath)) continue;
-                Console.WriteLine($"Found path for {item.ToString().Replace('_', ' ')}: \"{iniPath}\"");
-                try
+                Process.Start("explorer.exe");
+            }
+        }
+
+        // more hacks, yippee
+        private static void OpenFileExplorer()
+        {
+            var exp = new Process();
+            exp.StartInfo.FileName = "explorer.exe";
+
+            // force file explorer to open instead of desktop
+            exp.StartInfo.Arguments = "\"\""; 
+
+            exp.Start();
+        }
+
+        private static void RebootCab()
+        {
+            Process.Start("shutdown.exe", "/f /r /t 0");
+        }
+
+        private static ProcessStartInfo SetUpAmdaemon(Profile profile)
+        {
+            var si = new ProcessStartInfo();
+            si.WorkingDirectory = Path.Combine(profile.GetBaseDir().FullName, "bin");
+            si.WindowStyle = ProcessWindowStyle.Minimized;
+            si.FileName = "inject.exe";
+
+            var args = new string[] {
+                "-d -k",
+                profile.InjectDLL,
+                "amdaemon.exe",
+                profile.GetAmdaemonArgs()
+            };
+
+            si.Arguments = string.Join(" ", args);
+
+            return si;
+        }
+
+        private void LaunchUpdater(Profile profile)
+        {
+            if (File.Exists(profile.UpdaterPath))
+            {
+                Invoke(new Action(() => _state = LauncherState.Updating));
+
+                Invoke(new Action(() => _loadingText = "CHECKING FOR UPDATES"));
+
+                var updater = new Process();
+                updater.StartInfo.FileName = profile.UpdaterPath;
+                updater.StartInfo.WorkingDirectory = Path.GetDirectoryName(profile.UpdaterPath).ToString();
+                updater.StartInfo.Arguments = profile.UpdaterArgs;
+
+                updater.Start();
+
+                updater.WaitForExit();
+
+                if (settings.StrictMode && updater.ExitCode != 0)
                 {
-                    var version = new Version(iniPath, item);
-                    if (!version.HasSegatools && version.GameVersion != VersionType.Saturn)
-                    {
-                        DisplayError("Segatools missing", $"Ensure segatools is present in the bin folder ({version})");
-                        return;
-                    }
-                    if (version.BatchPath == String.Empty && version.GameVersion == VersionType.Saturn)
-                    {
-                        DisplayError("Saturn missing", $"Check path, cannot find saturn data");
-                        return;
-                    }
-                    Versions.Add(version);
+                    DisplayError("Updater error", $"{profile}: updater closed with exit code {updater.ExitCode}");
                 }
-                catch (Exception ex) when (ex is NotSupportedException || ex is DirectoryNotFoundException || ex is ArgumentException)
+
+                Invoke(new Action(() => _loadingText = "LOADING"));
+            }
+            else if (settings.StrictMode)
+            {
+                DisplayError("Updater error", $"{profile}: Could not find updater");
+            }
+        }
+
+        public void LaunchGame(Profile profile)
+        {
+            if (profile.UpdaterPath != null && !_skipUpdater) LaunchUpdater(profile);
+
+            if (_state == LauncherState.Error) return;
+
+            Invoke(new Action(() => _state = LauncherState.GameStarting));
+
+            Invoke(new Action(() => _loadingText = "STARTING"));
+
+            #if !DEBUG // it's annoying to have my explorer killed all the time
+                KillExplorer();
+            #endif
+
+            _gameProcess.EnableRaisingEvents = true;
+            _gameProcess.StartInfo.FileName = profile.GetGamePath();
+            _gameProcess.StartInfo.WorkingDirectory = profile.BasePath;
+
+            switch (profile.Type)
+            {
+                case ProfileType.WACCA:
                 {
-                    DisplayError($"Invalid path for {item.ToString().Replace('_', ' ')}", "Check the config paths for errors and try again");
+                    if(profile.Configs.Count > 0)
+                    {
+                        _amdaemonProcess.StartInfo = SetUpAmdaemon(profile);
+                        _amdaemonProcess.Start();
+                        break;
+                    }
+                    else
+                    {
+                        DisplayError("No amdaemon configs specified");
+                        return;
+                    }
+                }
+                case ProfileType.Generic:
+                {
+                    break;
+                }
+                default:
+                {
+                    DisplayError("Invalid launch type", $"Unknown launch type \"{profile.Type}\"");
                     return;
                 }
             }
 
-            int num_customs;
-            if(int.TryParse(_config["general"]["num_customs"], out num_customs))
+            if (profile.InjectGame)
             {
-                for (var i = 1; i < num_customs + 1; i++) {
-                    var customVer = _config[$"custom_{i}"];
+                var gamePath = _gameProcess.StartInfo.FileName;
+                _gameProcess.StartInfo.FileName = "inject.exe";
+                _gameProcess.StartInfo.WorkingDirectory = Path.Combine(profile.GetBaseDir().FullName, "bin");
+                _gameProcess.StartInfo.Arguments = string.Join(" ", new string[] { "-d -k", profile.InjectDLL, $"\"{gamePath}\"" });
+                _gameProcess.StartInfo.WindowStyle = ProcessWindowStyle.Minimized;
+            }
+            else _gameProcess.StartInfo.WindowStyle = ProcessWindowStyle.Normal;
 
-                    var customPath = customVer["path"];
-                    var customName = customVer["name"];
+            _gameProcess.Start();
 
-                    if (string.IsNullOrEmpty(customPath)) continue;
+            Invoke(new Action(() => _state = LauncherState.GameRunning));
+
+            Invoke(new Action(() => _loadingText = "RUNNING"));
+        }
+
+        private void LaunchDefault(object source, ElapsedEventArgs e)
+        {
+            Invoke(new Action(() => StopTimer()));
+
+            LaunchGame(SelectedProfile ?? DefaultProfile);
+        }
+
+        private void HandleGameClosed(object source, EventArgs e)
+        {
+            Invoke(new Action(() => _state = LauncherState.GameClosed));
+
+            // it will stay open if we don't close it
+            KillAMDaemon();
+
+            if (settings.UseWatchdog)
+            {
+                Invoke(new Action(() => {
+                    _loadingText = "RESTARTING";
+                    StartLaunchTimer();
+                }));
+            }
+            else Application.Exit();
+        }
+
+        private void LoadLauncherSettings()
+        {
+            try
+            {
+                settings = LauncherSettings.Load();
+            }
+            catch (FileNotFoundException) { /* don't care, we'll just make a new one */ }
+            catch (JsonReaderException)
+            {
+                DisplayError("Invalid Config", "launcher.json could not be parsed, check for errors");
+            }
+            LauncherSettings.Save(settings);
+        }
+
+        private void LoadProfiles()
+        {
+            // we already loaded them
+            if (Profiles.Count > 0) return;
+
+            var curDir = Environment.CurrentDirectory;
+
+            var profileDir = new DirectoryInfo(Path.Combine(curDir, settings.ProfileDir));
+            if (profileDir.Exists)
+            {
+                var verFiles = profileDir.EnumerateFiles("*.json", SearchOption.AllDirectories);
+
+                foreach (var file in verFiles)
+                {
                     try
                     {
-                        var version = new Version(customPath, VersionType.Custom, $"custom_{i}", customName);
-                        if (!version.HasSegatools)
-                        {
-                            DisplayError("Segatools missing", $"Ensure segatools is present in the bin folder ({version})");
-                            return;
-                        }
-                        Versions.Add(version);
-                        Console.WriteLine($"Found path for {customName}: \"{customPath}\"");
+                        Profiles.Add(Profile.LoadFromJson(file.FullName));
                     }
-                    catch (Exception ex) when (ex is NotSupportedException || ex is DirectoryNotFoundException || ex is ArgumentException)
+                    catch (JsonReaderException)
                     {
-                        DisplayError($"Invalid path for {customName}", "Check the config paths for errors and try again");
-                        return;
+                        if(settings.StrictMode) DisplayError("Profile Parse Error", string.Format("Unable to parse {0}, fix errors", file.Name));
+                    }
+                    catch (ProfileLoadException ex)
+                    {
+                        DisplayError("Profile Load Error", string.Format("{0}: {1}", file.Name, ex.Message));
                     }
                 }
-            }
-            
+            } else profileDir.Create();
 
-            if (Versions.Count == 0)
+            if (Profiles.Count == 0)
             {
-                DisplayError("No versions found", "Check the config paths for errors and try again");
-            } 
-            else
-            {
-                if (_config["general"]["default_ver"] == null || _config["general"]["default_ver"] == string.Empty)
-                {
-                    SetDefaultVer(Versions.First());
-                }
-
-                DefaultVer = Versions.Find(x => x.GameId == _config["general"]["default_ver"]);
+                DisplayError("No Profiles Found", "Ensure you have json files in profile folder");
             }
         }
 
-        public void SetDefaultVer(Version version)
+        // select profile for OTL launch
+        public void SelectProfile(Profile profile)
         {
-            DefaultVer = version;
-            _config["general"]["default_ver"] = DefaultVer.GameId;
-            _parser.WriteFile("wacca.ini", _config);
+            MenuHide();
+            StopTimer();
+            SelectedProfile = profile;
+            LaunchGame(SelectedProfile);
         }
 
-        private bool _hasError = false;
+        // set configured default, set first profile entry as default if not set
+        public void SetDefaultProfile()
+        {
+            if (DefaultProfile != null || Profiles.Count == 0) return;
 
+            var profile = Profiles.Find(x => x.Name == settings.DefaultProfile && x.Name != string.Empty);
+
+            if (profile == null)
+            {
+                profile = Profiles[0];
+
+                settings.DefaultProfile = profile.Name;
+                LauncherSettings.Save(settings);
+            }
+
+            DefaultProfile = profile;
+        }
+
+        // show an error and halt execution
         private void DisplayError(string error, string description = "")
         {
-            _hasError = true;
-            _delayTimer.Stop();
-            _loadingLabel?.Hide();
+            // invoke used to be able to display error even on timer thread
+            Invoke(new Action(() => {
+                if(_state == LauncherState.InMenu) MenuHide();
+                _state = LauncherState.Error;
+                StopTimer();
+                _loadingLabel?.Hide();
+            }));
 
             var errorLabel = new Label();
             SuspendLayout();
 
             errorLabel.Font = _menuFont;
             errorLabel.ForeColor = Color.Red;
-            errorLabel.Location = new Point(90, 495);
+            errorLabel.Location = new Point(90, 480);
             errorLabel.AutoSize = false;
             errorLabel.Name = "errorLabel";
-            errorLabel.Size = new Size(900, 90);
+            errorLabel.Size = new Size(900, 120);
             var errorText = new StringBuilder();
             errorText.AppendLine("ERROR: " + error + "\n");
             if (description != string.Empty) errorText.AppendLine(description);
             errorLabel.Text = errorText.ToString().ToUpper();
             errorLabel.TextAlign = ContentAlignment.MiddleCenter;
 
-            Controls.Add(errorLabel);
+            Invoke(new Action(() => Controls.Add(errorLabel)));
         }
 
-        public void StopTimer()
+        public static void StopTimer()
         {
             _delayTimer.Stop();
         }
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
-            OpenExplorer();
+            OpenDesktop();
         }
-    }
 
-    public enum VersionType
-    {
-        Unknown = 0,
-        WACCA,
-        WACCA_S,
-        Lily,
-        Lily_R,
-        Reverse,
-        Offline,
-        Custom = 10,
-        Saturn
-    }
-
-    public class Version
-    {
-        private readonly DirectoryInfo _dir;
-
-        public DirectoryInfo GameDirectoryInfo => _dir;
-        public readonly VersionType GameVersion;
-        public readonly string GameId;
-        public readonly string CustomName;
-        public readonly bool HasSegatools = false;
-        public readonly string BatchPath = string.Empty;
-
-        public Version(string path, VersionType version, string gameId = "", string customName = "")
+#if DEBUG
+        protected override void OnPaint(PaintEventArgs e)
         {
-            this._dir = new DirectoryInfo(path);
-            if (!_dir.Exists) throw new DirectoryNotFoundException();
-            
-            this.GameVersion = version;
-            this.GameId = gameId != string.Empty ? gameId : version.ToString().ToLower();
-            if (customName != string.Empty) this.CustomName = customName; 
-            var binPath = Path.Combine(_dir.FullName, "bin");
-            
-            if (version != VersionType.Saturn)
-            {
-                if (CheckForSegatools(binPath))
-                {
-                    HasSegatools = true;
-                    BatchPath = Path.Combine(binPath, "start.bat");
-                }
-            }
-            else if (CheckForSaturn(path))
-            {
-                BatchPath = Path.Combine(path, "SaturnGame.exe");
-            }
+            base.OnPaint(e);
+            e.Graphics.DrawEllipse(Pens.DeepPink, 10, 10, Width - 20, Height - 20);
         }
-
-        private bool CheckForSegatools(string path)
-        {
-            return File.Exists(Path.Combine(path, "segatools.ini")) &&
-                   File.Exists(Path.Combine(path, "mercuryhook.dll")) &&
-                   File.Exists(Path.Combine(path, "inject.exe"));
-        }
-
-        private bool CheckForSaturn(string path)
-        {
-            return Directory.Exists(Path.Combine(path, "SaturnGame_data")) &&
-                   File.Exists(Path.Combine(path, "SaturnGame.exe"));
-        }
-
-        public override string ToString()
-        {
-            return GameVersion.ToString().Replace('_', ' ');
-        }
-    }
-
-    public enum ConfigMenuAction
-    {
-        None = 0,
-        Menu,
-        Command,
-        VersionSelect,
-        ItemSelect,
-        Return
-    }
-
-    public class ConfigMenu
-    {
-        public string Name;
-        public List<ConfigMenu> Items;
-        public ConfigMenu ParentMenu;
-
-        private readonly ConfigMenuAction _action;
-        private readonly Action _method;
-        private readonly List<string> _options;
-        private readonly Version _version;
-        private readonly bool _defVer;
-
-        public void Select(MainForm form)
-        {
-            if (_action == ConfigMenuAction.Command)
-            {
-                // only works with static methods, why
-                this._method();
-            }
-            else if (_action == ConfigMenuAction.Menu && Items != null)
-            {
-                form._menuManager.NavigateToSubmenu(this);
-            }
-            else if (_action == ConfigMenuAction.ItemSelect && _options != null)
-            {
-                // generate list of options and cycle through them, complicated
-                return;
-            }
-            else if (_action == ConfigMenuAction.VersionSelect && _version != null)
-            {
-                if(_defVer)
-                {
-                    Console.WriteLine($"setting default version to {_version}");
-                    form.SetDefaultVer(_version);
-                    // TODO: this is kinda jank, fix this
-                    form._menuManager.UpdateCurrentMenuItems(form.GetDefaultVersionMenu());
-                }
-                else
-                {
-                    Console.WriteLine($"one-time launch for {_version}");
-                    form.MenuHide();
-                    form.StopTimer();
-                    form.LaunchGame(_version);
-                }
-                
-            }
-            else if (_action == ConfigMenuAction.Return) { form._menuManager.MenuBack(); }
-        }
-
-        public ConfigMenu(string name, ConfigMenuAction action = ConfigMenuAction.None, Action method = null, List<ConfigMenu> items = null, List<string> options = null, Version version = null, bool defVer = false)
-        {
-            this.Name = name;
-            this._action = action;
-
-            if (action == ConfigMenuAction.Menu && items == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with Menu type, but has no menu associated.");
-            else if (action == ConfigMenuAction.Command && method == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with Command type, but has no method associated.");
-            else if (action == ConfigMenuAction.ItemSelect && options == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with ItemSelect type, but has no options associated.");
-            else if (action == ConfigMenuAction.VersionSelect && version == null)
-                throw new ArgumentException($"Menu item '{name}' was defined with VersionSelect type, but has no version associated.");
-
-            this.Items = items;
-            this._method = method;
-            this._options = options;
-            this._version = version;
-            this._defVer = defVer;
-        }
-
-        public override string ToString()
-        {
-            return Name;
-        }
-    }
-
-    public class MenuManager
-    {
-        private ConfigMenu _rootMenu;
-        private ConfigMenu _currentMenu;
-        private WaccaList _list;
-        private MainForm _form;
-
-        public MenuManager(ConfigMenu root, WaccaList list, MainForm form)
-        {
-            _rootMenu = root;
-            _currentMenu = _rootMenu;
-            _list = list;
-            _list.AssignMenuManager(this);
-            _form = form;
-            UpdateList();      
-        }
-
-        public void CursorUp()
-        {
-            // move cursor up
-            if (_form.AutoLaunch) return;
-
-            var idx = ((_list.SelectedIndex - 1) + _list.Items.Count) % _list.Items.Count;
-            _list.SelectedIndex = idx;
-        }
-
-        public void CursorDown()
-        {
-            // move cursor down
-            if (_form.AutoLaunch) return;
-
-            var idx = (_list.SelectedIndex + 1) % _list.Items.Count;
-            _list.SelectedIndex = idx;
-        }
-
-        public void MenuBack()
-        {
-            // back from current menu item
-            if (_form.AutoLaunch) return;
-
-            Console.WriteLine("MenuBack");
-            if (_form._menuManager.GetCurrentMenu().ParentMenu == null)
-                _form.MenuHide();
-            else _form._menuManager.NavigateBack();
-        }
-
-        public void MenuSelect()
-        {
-            // select menu item
-            if (_form.AutoLaunch) return;
-
-            Console.WriteLine("MenuSelect");
-            (_list.SelectedItem as ConfigMenu).Select(_form);
-        }
-
-        public ConfigMenu GetCurrentMenu()
-        {
-            return _currentMenu;
-        }
-
-        public void NavigateToSubmenu(ConfigMenu menu)
-        {
-            menu.ParentMenu = _currentMenu;
-            _currentMenu = menu;
-            UpdateList();
-        }
-
-        public void NavigateBack()
-        {
-            _currentMenu = _currentMenu.ParentMenu;
-            UpdateList();
-        }
-
-        public void UpdateCurrentMenuItems(List<ConfigMenu> items)
-        {
-            _currentMenu.Items = items;
-            UpdateList(preserveIndex: true);
-        }
-
-        private void UpdateList(bool preserveIndex = false)
-        {
-            var oldIndex = _list.SelectedIndex;
-            _list.Items.Clear();
-            _list.Items.AddRange(_currentMenu.Items.ToArray());
-            _form.MenuUpdateLabel(_currentMenu.Name);
-            if (_list.Items.Count > 0) _list.SelectedIndex = preserveIndex ? oldIndex : 0;
-        }
+#endif
     }
 }
