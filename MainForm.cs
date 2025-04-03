@@ -550,7 +550,7 @@ namespace WACCALauncher
                 }
             }
 
-            if (profile.InjectGame)
+            if (profile.InjectGame && profile.Type == ProfileType.WACCA)
             {
                 var gamePath = _gameProcess.StartInfo.FileName;
                 _gameProcess.StartInfo.FileName = "inject.exe";
