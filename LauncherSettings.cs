@@ -12,20 +12,12 @@ namespace WACCALauncher
     [JsonObject]
     public class LauncherSettings
     {
-        [JsonProperty]
-        public string DefaultProfile { get; set; } = string.Empty;
-
-        [JsonProperty]
-        public bool UseWatchdog { get; set; } = true;
-
-        [JsonProperty]
-        public LauncherTheme Theme { get; set; } = LauncherTheme.Dark;
-
-        [JsonProperty]
-        public bool StrictMode { get; set; } = true;
-
-        [JsonProperty]
-        public string ProfileDir { get; set; } = "_profiles";
+        [JsonProperty] public string DefaultProfile { get; set; } = string.Empty;
+        [JsonProperty] public bool UseWatchdog { get; set; } = true;
+        [JsonProperty] public LauncherTheme Theme { get; set; } = LauncherTheme.Dark;
+        [JsonProperty] public bool StrictMode { get; set; } = true;
+        [JsonProperty] public string ProfileDir { get; set; } = "_profiles";
+        [JsonProperty] public bool DisableIO4 { get; set; } = false;
 
         public static LauncherSettings Load()
         {

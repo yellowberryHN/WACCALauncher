@@ -25,7 +25,6 @@ namespace WACCALauncher
             var idx = ((_list.SelectedIndex - 1) + _list.Items.Count) % _list.Items.Count;
             _list.SelectedIndex = idx;
             if (_list.Items[idx] is MenuSeparator) CursorUp();
-            _list.Invalidate();
         }
 
         public void CursorDown()
@@ -34,7 +33,6 @@ namespace WACCALauncher
             var idx = (_list.SelectedIndex + 1) % _list.Items.Count;
             _list.SelectedIndex = idx;
             if (_list.Items[idx] is MenuSeparator) CursorDown();
-            _list.Invalidate();
         }
 
         public void MenuBack()

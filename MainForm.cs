@@ -6,6 +6,7 @@ using System.Text;
 using System.Windows.Forms;
 using System.Timers;
 using System.Diagnostics;
+using LilyConsole;
 using SharpDX.DirectInput;
 using Newtonsoft.Json;
 
@@ -37,8 +38,13 @@ namespace WACCALauncher
         private static Label _versionLabel = new Label();
         private static Label _buttonLabel = new Label();
 
+        // legacy SharpInput IO4
         private readonly DirectInput _input = new DirectInput();
         private Joystick _ioBoard;
+        
+        // LilyConsole hardware control
+        private readonly LightController _consoleLights = new LightController();
+        private readonly IO4Controller _io4 = new IO4Controller();
 
         public static readonly List<Profile> Profiles = new List<Profile>();
         public static Profile DefaultProfile;
@@ -132,67 +138,85 @@ namespace WACCALauncher
             return joystick.GetCurrentState().Buttons[button];
         }
 
+        private bool ButtonsHeld(Joystick joystick, int[] buttons)
+        {
+            var state = joystick.GetCurrentState();
+            
+            foreach (var button in buttons)
+            {
+                if (!state.Buttons[button]) return false;
+            }
+            
+            return true;
+        }
+
         private void Tick(object sender, EventArgs e)
         {
             UpdateLoadingText();
 
-            if (_state != LauncherState.Launching && _state != LauncherState.InMenu) return;
-
-            var gamepads = _input.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AttachedOnly);
-
-            // set up IO board controls
-            if (_ioBoard == null && gamepads.Count > 0)
+            // set up IO board controls if enabled
+            if (!settings.DisableIO4)
             {
-                // it will be the only gamepad on the system
-                var guid = gamepads[0].InstanceGuid;
-                _ioBoard = new Joystick(_input, guid);
-                _ioBoard.Properties.BufferSize = 128;
-                _ioBoard.Acquire();
-            }
-            else if (gamepads.Count > 0)
-            {
-                _ioBoard.Poll();
-                var padStates = _ioBoard.GetBufferedData();
-
-                foreach (var padState in padStates)
+                if (_ioBoard == null)
                 {
-                    if(padState.Offset >= JoystickOffset.Buttons0
-                    && padState.Offset < JoystickOffset.Buttons10)
-                    {
-                        var pressed = padState.Value > 0;
-
-                        switch (_state)
-                        {
-                            case LauncherState.InMenu:
-                                // vol down
-                                if (ButtonPressed(padState, 0)) _menuManager.CursorDown();
-
-                                // vol up
-                                if (ButtonPressed(padState, 1)) _menuManager.CursorUp();
-
-                                // service
-                                if (ButtonPressed(padState, 6)) _menuManager.CursorDown();
-
-                                // test
-                                if (ButtonPressed(padState, 9)) _menuManager.MenuSelect();
-
-                                break;
-                            case LauncherState.Launching:
-                                // vol up (held)
-                                _skipUpdater = ButtonHeld(_ioBoard, 1);
-
-                                // test
-                                if (ButtonPressed(padState, 9)) MenuShow();
-
-                                break;
-                            case LauncherState.Error:
-                                // test
-                                if (ButtonPressed(padState, 9)) Application.Exit();
-
-                                break;
-                        }
-                    }
+                   var gamepads = _input.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AttachedOnly);
+                    
+                   // it will be the only gamepad on the system
+                   var guid = gamepads[0].InstanceGuid;
+                   _ioBoard = new Joystick(_input, guid);
+                   _ioBoard.Properties.BufferSize = 128;
+                   _ioBoard.Acquire();
                 }
+                else
+                {
+                   // TODO: make this behave safer
+                   _ioBoard.Poll();
+                   var padStates = _ioBoard.GetBufferedData();
+
+                   foreach (var padState in padStates)
+                   {
+                       if(padState.Offset >= JoystickOffset.Buttons0
+                          && padState.Offset < JoystickOffset.Buttons10)
+                       {
+                           var pressed = padState.Value > 0;
+
+                           switch (_state)
+                           {
+                               case LauncherState.InMenu:
+                                   // vol down
+                                   if (ButtonPressed(padState, 0)) _menuManager.CursorDown();
+
+                                   // vol up
+                                   if (ButtonPressed(padState, 1)) _menuManager.CursorUp();
+
+                                   // service
+                                   if (ButtonPressed(padState, 6)) _menuManager.CursorDown();
+
+                                   // test
+                                   if (ButtonPressed(padState, 9)) _menuManager.MenuSelect();
+
+                                   break;
+                               case LauncherState.Launching:
+                                   // vol up (held)
+                                   _skipUpdater = ButtonHeld(_ioBoard, 1);
+
+                                   // test
+                                   if (ButtonPressed(padState, 9)) MenuShow();
+
+                                   break;
+                               case LauncherState.Error:
+                                   // test
+                                   if (ButtonPressed(padState, 9)) Application.Exit();
+
+                                   break;
+                               case LauncherState.GameRunning:
+                                   if (ButtonsHeld(_ioBoard,new[] {0, 1, 6, 9})) _gameProcess.Kill();
+
+                                   break;
+                           }
+                       }
+                   }
+                } 
             }
         }
 
@@ -485,7 +509,7 @@ namespace WACCALauncher
 
                 var updater = new Process();
                 updater.StartInfo.FileName = profile.UpdaterPath;
-                updater.StartInfo.WorkingDirectory = Path.GetDirectoryName(profile.UpdaterPath).ToString();
+                updater.StartInfo.WorkingDirectory = Path.GetDirectoryName(profile.UpdaterPath) ?? "";
                 updater.StartInfo.Arguments = profile.UpdaterArgs;
 
                 updater.Start();
@@ -579,7 +603,7 @@ namespace WACCALauncher
             Invoke(new Action(() => _state = LauncherState.GameClosed));
 
             // it will stay open if we don't close it
-            KillAMDaemon();
+            _amdaemonProcess.Kill();
 
             if (settings.UseWatchdog)
             {
@@ -643,9 +667,10 @@ namespace WACCALauncher
         // select profile for OTL launch
         public void SelectProfile(Profile profile)
         {
+            SelectedProfile = profile;
             MenuHide();
             StopTimer();
-            SelectedProfile = profile;
+            
             LaunchGame(SelectedProfile);
         }
 

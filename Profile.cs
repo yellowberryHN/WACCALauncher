@@ -40,6 +40,12 @@ namespace WACCALauncher
         [JsonProperty]
         public string UpdaterArgs;
 
+        [JsonProperty]
+        public string ConsoleColor;
+        
+        [JsonProperty]
+        public string PanelColor;
+
         public DirectoryInfo GetBaseDir()
         {
             return new DirectoryInfo(BasePath);
