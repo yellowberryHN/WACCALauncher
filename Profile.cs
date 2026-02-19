@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace WACCALauncher
 {
@@ -64,8 +65,20 @@ namespace WACCALauncher
         [JsonProperty]
         public bool InjectGame = true;
 
+        [JsonProperty, Obsolete("Use InjectDLLs instead.", true)]
+        public string InjectDLL
+        {
+            get => null;
+            set => InjectDLLs.Add(value);
+        }
+
         [JsonProperty]
-        public string InjectDLL = "mercuryhook.dll";
+        public List<string> InjectDLLs = new List<string> { "mercuryhook.dll" };
+
+        public string GetInjectDLLArgs()
+        {
+            return string.Join(" ", InjectDLLs.Select(s => $"-k {s}"));
+        }
 
         public string GetAmdaemonArgs()
         {
@@ -83,7 +96,7 @@ namespace WACCALauncher
             {
                 throw new ProfileLoadException("Base dir not found");
             }
-            else if (!File.Exists(loaded.GetGamePath()))
+            if (!File.Exists(loaded.GetGamePath()))
             {
                 throw new ProfileLoadException("Game file not found");
             }
@@ -95,7 +108,7 @@ namespace WACCALauncher
                 {
                     throw new ProfileLoadException("configs missing, check config and files");
                 }
-                else if (!CheckForInjector(binPath, loaded.InjectDLL))
+                if (!CheckForInjector(binPath, loaded.InjectDLLs))
                 {
                     throw new ProfileLoadException("Segatools missing, check config and files");
                 }
@@ -109,9 +122,9 @@ namespace WACCALauncher
             File.WriteAllText(ConfigPath, JsonConvert.SerializeObject(this, Formatting.Indented));
         }
 
-        private static bool CheckForInjector(string path, string dll)
+        private static bool CheckForInjector(string path, List<string> dlls)
         {
-            return File.Exists(Path.Combine(path, dll)) &&
+            return dlls.TrueForAll(dll => File.Exists(Path.Combine(path, dll))) &&
                    File.Exists(Path.Combine(path, "segatools.ini")) &&
                    File.Exists(Path.Combine(path, "inject.exe"));
         }

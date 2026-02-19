@@ -486,16 +486,8 @@ namespace WACCALauncher
             si.WorkingDirectory = Path.Combine(profile.GetBaseDir().FullName, "bin");
             si.WindowStyle = ProcessWindowStyle.Minimized;
             si.FileName = "inject.exe";
-
-            var args = new string[] {
-                "-d -k",
-                profile.InjectDLL,
-                "amdaemon.exe",
-                profile.GetAmdaemonArgs()
-            };
-
-            si.Arguments = string.Join(" ", args);
-
+            
+            si.Arguments = string.Join(" ", "-d", $"-k {profile.InjectDLLs[0]}", "amdaemon.exe", profile.GetAmdaemonArgs());
             return si;
         }
 
@@ -557,11 +549,8 @@ namespace WACCALauncher
                         _amdaemonProcess.Start();
                         break;
                     }
-                    else
-                    {
-                        DisplayError("No amdaemon configs specified");
-                        return;
-                    }
+                    DisplayError("No amdaemon configs specified");
+                    return;
                 }
                 case ProfileType.Generic:
                 {
@@ -579,7 +568,7 @@ namespace WACCALauncher
                 var gamePath = _gameProcess.StartInfo.FileName;
                 _gameProcess.StartInfo.FileName = "inject.exe";
                 _gameProcess.StartInfo.WorkingDirectory = Path.Combine(profile.GetBaseDir().FullName, "bin");
-                _gameProcess.StartInfo.Arguments = string.Join(" ", new string[] { "-d -k", profile.InjectDLL, $"\"{gamePath}\"" });
+                _gameProcess.StartInfo.Arguments = string.Join(" ", "-d", profile.GetInjectDLLArgs(), $"\"{gamePath}\"");
                 _gameProcess.StartInfo.WindowStyle = ProcessWindowStyle.Minimized;
             }
             else _gameProcess.StartInfo.WindowStyle = ProcessWindowStyle.Normal;
@@ -603,7 +592,14 @@ namespace WACCALauncher
             Invoke(new Action(() => _state = LauncherState.GameClosed));
 
             // it will stay open if we don't close it
-            _amdaemonProcess.Kill();
+            try
+            {
+                _amdaemonProcess.Kill();
+            }
+            catch
+            {
+                // amdaemon wasn't running
+            }
 
             if (settings.UseWatchdog)
             {
