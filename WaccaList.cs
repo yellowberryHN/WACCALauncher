@@ -108,15 +108,23 @@ namespace WACCALauncher
 
             e.Graphics.FillRectangle(bgBrush, bounds);
 
-            var text = item.ToString().ToUpper();
+            var text = item.ToString().ToUpper().Split('\t');
             var selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            if (selected && item is MenuSeparator) text[0] = "- boo -"; // shows up if you select a separator via mouse
 
             if (Scrollable)
             {
                 bounds = new Rectangle(bounds.X, bounds.Y, bounds.Width - 40, bounds.Height);
             }
 
-            e.Graphics.DrawString(text, Font, selected ? highlightBrush : textBrush, bounds, new StringFormat() { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
+            if (item is IControlledMenuItem)
+            {
+                if (item == menuManager._controlledItem && selected) selected = false;
+                e.Graphics.DrawString(text[1], Font, item == menuManager._controlledItem ? highlightBrush : textBrush, bounds, new StringFormat() { Alignment = StringAlignment.Far });
+            }
+            
+            e.Graphics.DrawString(text[0], Font, selected ? highlightBrush : textBrush, bounds, new StringFormat() { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap });
+            
 
             if (!AtTop && GetTopIndex() == e.Index)
             {
@@ -156,10 +164,10 @@ namespace WACCALauncher
 
             base.OnPaint(e);
         }
-
-        protected override void OnSelectedValueChanged(EventArgs e)
+        
+        protected override void OnDoubleClick(EventArgs e)
         {
-            base.OnSelectedValueChanged(e);
+            menuManager.MenuSelect();
         }
     }
 }

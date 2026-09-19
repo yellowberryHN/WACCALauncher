@@ -28,7 +28,7 @@ namespace WACCALauncher
         private static System.Timers.Timer _delayTimer;
         private readonly System.Windows.Forms.Timer _t = new System.Windows.Forms.Timer();
 
-        public LauncherState _state;
+        public LauncherState State;
 
         private static Font _menuFont;
 
@@ -39,8 +39,8 @@ namespace WACCALauncher
         private static Label _buttonLabel = new Label();
 
         // legacy SharpInput IO4
-        private readonly DirectInput _input = new DirectInput();
-        private Joystick _ioBoard;
+        private readonly DirectInput _directInput = new DirectInput();
+        private Joystick _io4Legacy;
         
         // LilyConsole hardware control
         private readonly LightController _consoleLights = new LightController();
@@ -50,7 +50,7 @@ namespace WACCALauncher
         public static Profile DefaultProfile;
         public Profile SelectedProfile;
 
-        private bool _skipUpdater = false;
+        private bool _skipUpdater;
 
         private readonly Process _gameProcess = new Process();
         private readonly Process _amdaemonProcess = new Process();
@@ -58,6 +58,12 @@ namespace WACCALauncher
         internal MenuManager _menuManager;
 
         internal LauncherSettings settings;
+
+        private const IO4ButtonState GameKillKeys = IO4ButtonState.VolumeUp | IO4ButtonState.VolumeDown |
+                                                               IO4ButtonState.Service | IO4ButtonState.Test;
+
+        private static string menuButtonLabel = "Press SERVICE button to select\nPress TEST button to decide";
+        private static string errorButtonLabel = "Press TEST button to exit";
 
         [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
@@ -67,19 +73,32 @@ namespace WACCALauncher
             _menuFont = FontLoader.LoadFont();
 
             InitializeComponent();
-
-            // start input timer
+            
+            LoadLauncherSettings();
+            
+            // used for legacy input and UI state input
             _t.Tick += Tick;
             _t.Interval = 20;
             _t.Start();
-
+            
             // if we're running on a vertical monitor, compensate for ring offset
             if (Program.IsCorrectRes())
             {
                 var bounds = Program.CurrentScreen.Bounds;
                 SetBounds(bounds.X, bounds.Y + 362, Width, Height);
             }
+            
+            if (!settings.DisableLights)
+            {
+                _consoleLights.Initialize();
+                _consoleLights.Clear();
+            }
 
+            if (!settings.DisableIO4 && !settings.LegacyIO4)
+            {
+                RegisterIO4Events();
+            }
+            
             // bind game exit to be handled properly (ONLY ONCE)
             _gameProcess.Exited += HandleGameClosed;
 
@@ -87,37 +106,61 @@ namespace WACCALauncher
             StartLaunchTimer();
         }
 
+        // UI thread
         public void UpdateLoadingText()
         {
             _loadingLabel.Text = string.Join("",_loadingText,_skipUpdater ? "!!!" : "...");
         }
 
+        // UI thread
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (_state == LauncherState.Launching || _state == LauncherState.InMenu)
+            switch (State)
             {
-                switch(keyData)
+                case LauncherState.InMenu:
                 {
-                    case Keys.Up:
-                        _menuManager.CursorUp();
-                        return true;
-                    case Keys.Down:
-                        _menuManager.CursorDown();
-                        return true;
-                    case Keys.Enter:
-                        _menuManager.MenuSelect();
-                        return true;
-                    case Keys.Escape:
-                        if (_state == LauncherState.InMenu) _menuManager.MenuBack();
-                        else MenuShow();
+                    switch (keyData)
+                    {
+                        case Keys.Up:
+                        case Keys.Left:
+                            _menuManager.CursorUp();
+                            return true;
+                        case Keys.Down:
+                        case Keys.Right:
+                            _menuManager.CursorDown();
+                            return true;
+                        case Keys.Enter:
+                        case Keys.F2:
+                            _menuManager.MenuSelect();
+                            return true;
+                        case Keys.Escape:
+                        case Keys.F1:
+                            _menuManager.MenuBack();
+                            return true;
+                    }
 
-                        return true;
+                    break;
                 }
-            }
-            else if (_state == LauncherState.Error && keyData == Keys.Escape)
-            {
-                Application.Exit();
-                return true;
+                case LauncherState.Launching:
+                {
+                    switch (keyData)
+                    {
+                        case Keys.U:
+                            _skipUpdater = !_skipUpdater;
+                            return true;
+                        case Keys.Escape:
+                        case Keys.F1:
+                            MenuShow();
+                            return true;
+                    }
+
+                    break;
+                }
+                case LauncherState.Error when keyData == Keys.Escape || keyData == Keys.F1:
+                {
+                    Application.Exit();
+                    return true;
+                }
             }
 
             return base.ProcessCmdKey(ref msg, keyData);
@@ -150,86 +193,211 @@ namespace WACCALauncher
             return true;
         }
 
+        // timer thread
         private void Tick(object sender, EventArgs e)
         {
             UpdateLoadingText();
 
-            // set up IO board controls if enabled
-            if (!settings.DisableIO4)
+            // handle IO board controls if enabled
+            if (!settings.DisableIO4 && settings.LegacyIO4)
             {
-                if (_ioBoard == null)
-                {
-                   var gamepads = _input.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AttachedOnly);
-                    
-                   // it will be the only gamepad on the system
-                   var guid = gamepads[0].InstanceGuid;
-                   _ioBoard = new Joystick(_input, guid);
-                   _ioBoard.Properties.BufferSize = 128;
-                   _ioBoard.Acquire();
-                }
-                else
-                {
-                   // TODO: make this behave safer
-                   _ioBoard.Poll();
-                   var padStates = _ioBoard.GetBufferedData();
-
-                   foreach (var padState in padStates)
-                   {
-                       if(padState.Offset >= JoystickOffset.Buttons0
-                          && padState.Offset < JoystickOffset.Buttons10)
-                       {
-                           var pressed = padState.Value > 0;
-
-                           switch (_state)
-                           {
-                               case LauncherState.InMenu:
-                                   // vol down
-                                   if (ButtonPressed(padState, 0)) _menuManager.CursorDown();
-
-                                   // vol up
-                                   if (ButtonPressed(padState, 1)) _menuManager.CursorUp();
-
-                                   // service
-                                   if (ButtonPressed(padState, 6)) _menuManager.CursorDown();
-
-                                   // test
-                                   if (ButtonPressed(padState, 9)) _menuManager.MenuSelect();
-
-                                   break;
-                               case LauncherState.Launching:
-                                   // vol up (held)
-                                   _skipUpdater = ButtonHeld(_ioBoard, 1);
-
-                                   // test
-                                   if (ButtonPressed(padState, 9)) MenuShow();
-
-                                   break;
-                               case LauncherState.Error:
-                                   // test
-                                   if (ButtonPressed(padState, 9)) Application.Exit();
-
-                                   break;
-                               case LauncherState.GameRunning:
-                                   if (ButtonsHeld(_ioBoard,new[] {0, 1, 6, 9})) _gameProcess.Kill();
-
-                                   break;
-                           }
-                       }
-                   }
-                } 
+                LegacyIO4Handler(sender, e);
             }
         }
 
+        private void SetIO4Color(LightColor color)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new MethodInvoker(() => SetIO4Color(color)));
+                return;
+            }
+            
+            if(settings.DisableIO4 || settings.DisableLights) return;
+            _io4.SetColor(color);
+        }
+
+        private void SetConsolePattern(LightFrame frame)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new MethodInvoker(() => SetConsolePattern(frame)));
+                return;
+            }
+            
+            if (settings.DisableLights) return;
+            _consoleLights.SendLightFrame(frame);
+        }
+
+        // timer thread
+        private void LegacyIO4Handler(object sender, EventArgs e)
+        {
+            if (_io4Legacy == null)
+            {
+               var gamepads = _directInput.GetDevices(DeviceClass.GameControl, DeviceEnumerationFlags.AttachedOnly);
+               if (gamepads.Count == 0) return;
+               
+               // it will be the only gamepad on the system
+               var guid = gamepads[0].InstanceGuid;
+               _io4Legacy = new Joystick(_directInput, guid);
+               _io4Legacy.Properties.BufferSize = 128;
+               _io4Legacy.Acquire();
+            }
+            else
+            {
+               // TODO: make this behave safer
+               _io4Legacy.Poll();
+               var padStates = _io4Legacy.GetBufferedData();
+
+               foreach (var padState in padStates)
+               {
+                   if(padState.Offset >= JoystickOffset.Buttons0
+                      && padState.Offset < JoystickOffset.Buttons10)
+                   {
+                       var pressed = padState.Value > 0;
+
+                       switch (State)
+                       {
+                           case LauncherState.InMenu:
+                               // vol down
+                               if (ButtonPressed(padState, 0)) _menuManager.CursorDown();
+
+                               // vol up
+                               if (ButtonPressed(padState, 1)) _menuManager.CursorUp();
+
+                               // service
+                               if (ButtonPressed(padState, 6)) _menuManager.CursorDown();
+
+                               // test
+                               if (ButtonPressed(padState, 9)) _menuManager.MenuSelect();
+
+                               break;
+                           case LauncherState.Launching:
+                               // vol up (held)
+                               _skipUpdater = ButtonHeld(_io4Legacy, 1);
+
+                               // test
+                               if (ButtonPressed(padState, 9)) MenuShow();
+
+                               break;
+                           case LauncherState.Error:
+                               // test
+                               if (ButtonPressed(padState, 9)) Application.Exit();
+
+                               break;
+                           case LauncherState.GameRunning:
+                               if (ButtonsHeld(_io4Legacy,new[] {0, 1, 6, 9}) && !settings.DisableGameKill)
+                                   _gameProcess.Kill();
+
+                               break;
+                       }
+                   }
+               }
+            } 
+        }
+
+        private void RegisterIO4Events()
+        {
+            if (!_io4.Initialized)
+            {
+                _io4.Initialize();
+                SetIO4Color(LightColor.White);
+            }
+            
+            _io4.ButtonPressed += OnIO4ButtonPressed;
+            _io4.ButtonStateChanged += OnIO4ButtonStateChanged;
+        }
+        
+        // held buttons
+        private void OnIO4ButtonStateChanged(IO4ButtonState btnState)
+        {
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                if (IsDisposed || Disposing) return;
+                
+                switch (State)
+                {
+                    case LauncherState.Launching:
+                        _skipUpdater = (btnState & IO4ButtonState.VolumeUp) != 0;
+                        break;
+                    case LauncherState.GameRunning:
+                        if ((btnState & GameKillKeys) == GameKillKeys && !settings.DisableGameKill)
+                        {
+                            SetIO4Color(LightColor.Red);
+                            _gameProcess.Kill();
+                        }
+                        break;
+                }
+            }));
+        }
+
+        // pressed buttons
+        private void OnIO4ButtonPressed(IO4ButtonState btnState)
+        {
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                if (IsDisposed || Disposing) return;
+                
+                switch (State)
+                {
+                    case LauncherState.InMenu:
+                        if((btnState & IO4ButtonState.VolumeDown) != 0) _menuManager.CursorDown();
+                        if((btnState & IO4ButtonState.VolumeUp) != 0) _menuManager.CursorUp();
+                        if((btnState & IO4ButtonState.Service) != 0) _menuManager.CursorDown();
+                        if((btnState & IO4ButtonState.Test) != 0) _menuManager.MenuSelect();
+                        break;
+                    case LauncherState.Launching:
+                        if ((btnState & IO4ButtonState.Test) != 0) MenuShow();
+                        break;
+                    case LauncherState.Error:
+                        if ((btnState & IO4ButtonState.Test) != 0) Application.Exit();
+                        break;
+                }
+            }));
+        }
+
+        // UI thread
         private void StartLaunchTimer()
         {
-            if (_state == LauncherState.Launching && _delayTimer != null && _delayTimer.Enabled) return;
-            _state = LauncherState.Launching;
+            if (State == LauncherState.Launching && _delayTimer != null && _delayTimer.Enabled) return;
+            State = LauncherState.Launching;
             _delayTimer = new System.Timers.Timer(5000);
             _delayTimer.Elapsed += LaunchDefault;
 
             _delayTimer.Enabled = true;
+
+            SetProfileColor(SelectedProfile ?? DefaultProfile);
+            SetProfilePattern(SelectedProfile ?? DefaultProfile);
         }
 
+        private void SetProfileColor(Profile profile)
+        {
+            var lightColor = LightColor.White;
+            try
+            {
+                if (profile?.PanelColor != null)
+                {
+                    var color = ColorTranslator.FromHtml(profile?.PanelColor);
+                    lightColor = new LightColor(color.R, color.G, color.B, color.A);
+                }
+            }
+            catch (Exception)
+            {
+                lightColor = LightColor.Off;
+            }
+            
+            SetIO4Color(lightColor);
+        }
+
+        private void SetProfilePattern(Profile profile)
+        {
+            if (profile?.PatternLightFrame != null)
+            {
+                SetConsolePattern(profile.PatternLightFrame);
+            }
+        }
+
+        // UI thread
         public void MenuShow()
         {
             _delayTimer.Stop();
@@ -238,9 +406,13 @@ namespace WACCALauncher
             _buttonLabel.Show();
             menuListBox.Visible = menuListBox.Enabled = true;
 
-            _state = LauncherState.InMenu;
+            SetIO4Color(LightColor.White);
+            _consoleLights.Clear();
+            
+            State = LauncherState.InMenu;
         }
 
+        // UI thread
         public void MenuHide()
         {
             menuLabel.Hide();
@@ -249,18 +421,20 @@ namespace WACCALauncher
 
             _menuManager.ReturnToRoot();
 
-            if (_state == LauncherState.Error) return;
+            if (State == LauncherState.Error) return;
 
             _loadingLabel.Show();
 
             StartLaunchTimer();
         }
 
+        // UI thread
         public void MenuUpdateLabel(string text)
         {
             menuLabel.Text = text.ToUpper();
         }
 
+        // UI thread
         private void MainForm_Load(object sender, EventArgs e)
         {
             menuListBox.Font = _menuFont;
@@ -268,7 +442,7 @@ namespace WACCALauncher
             SuspendLayout();
 
             _loadingLabel.Font = _menuFont;
-            _loadingLabel.ForeColor = Program.IsRecommendedWinVer() ? Color.White : Color.DarkOrange;
+            _loadingLabel.ForeColor = Program.IsRecommendedWinVer() ? Color.White : Color.Yellow;
             _loadingLabel.BackColor = Color.Transparent;
             _loadingLabel.Location = new Point(0, 525);
             _loadingLabel.Name = "loadingLabel";
@@ -297,7 +471,7 @@ namespace WACCALauncher
             _buttonLabel.Name = "buttonLabel";
             _buttonLabel.Size = new Size(Width, 60);
             _buttonLabel.TabIndex = 0;
-            _buttonLabel.Text = "Press SERVICE button to select\nPress TEST button to decide".ToUpper();
+            _buttonLabel.Text = menuButtonLabel.ToUpper();
             _buttonLabel.TextAlign = ContentAlignment.MiddleCenter;
             _buttonLabel.Visible = false;
 
@@ -316,6 +490,7 @@ namespace WACCALauncher
             _menuManager = new MenuManager(mainMenu, menuListBox, this);
         }
 
+        // UI thread
         private void ReloadConfig()
         {
             DefaultProfile = null;
@@ -326,6 +501,9 @@ namespace WACCALauncher
             LoadProfiles();
 
             SetDefaultProfile();
+            
+            SetProfileColor(SelectedProfile ?? DefaultProfile);
+            SetProfilePattern(SelectedProfile ?? DefaultProfile);
         }
 
         private Menu GetMenu()
@@ -414,7 +592,63 @@ namespace WACCALauncher
                         new MenuAction("nesting 333")
                     })
                 }),
-                GenerateLargeMenu("Large Menu", 50)
+                GenerateLargeMenu("Large Menu", 50),
+                new Menu("Light testing", items: new List<IMenuItem>()
+                {
+                    new Menu("Panel Lights", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("Red", () => SetIO4Color(LightColor.Red)),
+                        new MenuAction("Green", () => SetIO4Color(LightColor.Green)),
+                        new MenuAction("Blue", () => SetIO4Color(LightColor.Blue)),
+                        new MenuAction("White", () => SetIO4Color(LightColor.White)),
+                        new MenuAction("Scarlet", () => SetIO4Color(new LightColor(255, 36, 0))),
+                        new MenuAction("Off", () => SetIO4Color(LightColor.Black))
+                    }),
+                    new Menu("Console Lights", items: new List<IMenuItem>()
+                    {
+                        new MenuAction("Red", () => SetConsolePattern(new LightFrame(LightColor.Red))),
+                        new MenuAction("Green", () => SetConsolePattern(new LightFrame(LightColor.Green))),
+                        new MenuAction("Blue", () => SetConsolePattern(new LightFrame(LightColor.Blue))),
+                        new MenuAction("White", () => SetConsolePattern(new LightFrame(LightColor.White))),
+                        new MenuAction("Scarlet", () => SetConsolePattern(new LightFrame(new LightColor(255, 36, 0)))),
+                        new MenuAction("Off", () => _consoleLights.Clear())
+                    }),
+                }),
+                new Menu("New menu items", items: new List<IMenuItem>()
+                {
+                    new MenuListOption<float>("Test guy", f => Console.WriteLine($"float: {f}"), new Tuple<List<string>, List<float>>(
+                        new List<string>()
+                        {
+                            "Float 1",
+                            "Float 2",
+                            "Float 3",
+                            "Float 4"
+                        },
+                        new List<float>()
+                        {
+                            1.45f,
+                            15.4f,
+                            87.1104f,
+                            2013.1484f
+                        }
+                    )),
+                    new MenuListOption<string>("Test guy 2", s => Console.WriteLine($"string: {s}"), new Tuple<List<string>, List<string>>(
+                        new List<string>()
+                        {
+                            "String 1",
+                            "String 2",
+                            "String 3",
+                            "String 4"
+                        },
+                        new List<string>()
+                        {
+                            "we",
+                            "really",
+                            "out",
+                            "here"
+                        }
+                    ))
+                })
             });
         }
 
@@ -495,9 +729,11 @@ namespace WACCALauncher
         {
             if (File.Exists(profile.UpdaterPath))
             {
-                Invoke(new Action(() => _state = LauncherState.Updating));
-
-                Invoke(new Action(() => _loadingText = "CHECKING FOR UPDATES"));
+                BeginInvoke(new MethodInvoker(() =>
+                {
+                    State = LauncherState.Updating;
+                    _loadingText = "CHECKING FOR UPDATES";
+                }));
 
                 var updater = new Process();
                 updater.StartInfo.FileName = profile.UpdaterPath;
@@ -513,7 +749,7 @@ namespace WACCALauncher
                     DisplayError("Updater error", $"{profile}: updater closed with exit code {updater.ExitCode}");
                 }
 
-                Invoke(new Action(() => _loadingText = "LOADING"));
+                BeginInvoke(new MethodInvoker(() => _loadingText = "LOADING"));
             }
             else if (settings.StrictMode)
             {
@@ -525,11 +761,13 @@ namespace WACCALauncher
         {
             if (profile.UpdaterPath != null && !_skipUpdater) LaunchUpdater(profile);
 
-            if (_state == LauncherState.Error) return;
+            if (State == LauncherState.Error) return;
 
-            Invoke(new Action(() => _state = LauncherState.GameStarting));
-
-            Invoke(new Action(() => _loadingText = "STARTING"));
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                State = LauncherState.GameStarting;
+                _loadingText = "STARTING";
+            }));
 
             #if !DEBUG // it's annoying to have my explorer killed all the time
                 KillExplorer();
@@ -563,6 +801,8 @@ namespace WACCALauncher
                 }
             }
 
+            BeginInvoke(new MethodInvoker(() => _consoleLights.Close(false)));
+
             if (profile.InjectGame && profile.Type == ProfileType.WACCA)
             {
                 var gamePath = _gameProcess.StartInfo.FileName;
@@ -575,21 +815,30 @@ namespace WACCALauncher
 
             _gameProcess.Start();
 
-            Invoke(new Action(() => _state = LauncherState.GameRunning));
-
-            Invoke(new Action(() => _loadingText = "RUNNING"));
+            BeginInvoke(new MethodInvoker(() =>
+            {
+                State = LauncherState.GameRunning;
+                _loadingText = "RUNNING";
+            }));
         }
 
         private void LaunchDefault(object source, ElapsedEventArgs e)
         {
-            Invoke(new Action(() => StopTimer()));
+            Invoke(new MethodInvoker(StopTimer));
 
             LaunchGame(SelectedProfile ?? DefaultProfile);
         }
 
         private void HandleGameClosed(object source, EventArgs e)
         {
-            Invoke(new Action(() => _state = LauncherState.GameClosed));
+            // if we are in a different thread, call this on the UI thread instead
+            if (InvokeRequired)
+            {
+                BeginInvoke(new MethodInvoker(() => HandleGameClosed(source, e)));
+                return;
+            }
+
+            State = LauncherState.GameClosed;
 
             // it will stay open if we don't close it
             try
@@ -600,13 +849,13 @@ namespace WACCALauncher
             {
                 // amdaemon wasn't running
             }
-
+            
             if (settings.UseWatchdog)
             {
-                Invoke(new Action(() => {
-                    _loadingText = "RESTARTING";
-                    StartLaunchTimer();
-                }));
+                if (!settings.DisableLights) _consoleLights.Initialize();
+                
+                _loadingText = "RESTARTING";
+                StartLaunchTimer();
             }
             else Application.Exit();
         }
@@ -620,7 +869,7 @@ namespace WACCALauncher
             catch (FileNotFoundException) { /* don't care, we'll just make a new one */ }
             catch (JsonReaderException)
             {
-                DisplayError("Invalid Config", "launcher.json could not be parsed, check for errors");
+                DisplayError("Invalid Config", "launcher.json could not be parsed, check for json errors");
             }
             LauncherSettings.Save(settings);
         }
@@ -641,15 +890,21 @@ namespace WACCALauncher
                 {
                     try
                     {
-                        Profiles.Add(Profile.LoadFromJson(file.FullName));
+                        var profileObj = Profile.LoadFromJson(file.FullName);
+                        if (profileObj != null && Profiles.Find(x => x.Name == profileObj.Name) != null)
+                        {
+                            throw new ProfileLoadException($"Duplicate profile name \"{profileObj.Name}\"");
+                        }
+                        Profiles.Add(profileObj);
                     }
                     catch (JsonReaderException)
                     {
-                        if(settings.StrictMode) DisplayError("Profile Parse Error", string.Format("Unable to parse {0}, fix errors", file.Name));
+                        if(settings.StrictMode) DisplayError("Profile Parse Error",
+                            $"Unable to parse {file.Name}, fix json errors");
                     }
                     catch (ProfileLoadException ex)
                     {
-                        DisplayError("Profile Load Error", string.Format("{0}: {1}", file.Name, ex.Message));
+                        DisplayError("Profile Load Error", $"{file.Name}: {ex.Message}");
                     }
                 }
             } else profileDir.Create();
@@ -691,13 +946,17 @@ namespace WACCALauncher
         // show an error and halt execution
         private void DisplayError(string error, string description = "")
         {
-            // invoke used to be able to display error even on timer thread
-            Invoke(new Action(() => {
-                if(_state == LauncherState.InMenu) MenuHide();
-                _state = LauncherState.Error;
-                StopTimer();
-                _loadingLabel?.Hide();
-            }));
+            // if we are in a different thread, call this on the UI thread instead
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => DisplayError(error, description)));
+                return;
+            }
+            
+            if(State == LauncherState.InMenu) MenuHide();
+            State = LauncherState.Error;
+            StopTimer();
+            _loadingLabel?.Hide();
 
             var errorLabel = new Label();
             SuspendLayout();
@@ -714,7 +973,10 @@ namespace WACCALauncher
             errorLabel.Text = errorText.ToString().ToUpper();
             errorLabel.TextAlign = ContentAlignment.MiddleCenter;
 
-            Invoke(new Action(() => Controls.Add(errorLabel)));
+            Controls.Add(errorLabel);
+
+            _buttonLabel.Text = errorButtonLabel.ToUpper();
+            _buttonLabel.Show();
         }
 
         public static void StopTimer()
@@ -724,6 +986,16 @@ namespace WACCALauncher
 
         private void MainForm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (_io4.Initialized)
+            {
+                _io4.ButtonPressed -= OnIO4ButtonPressed;
+                _io4.Close();
+            }
+
+            if (_consoleLights.Initialized)
+            {
+                _consoleLights.Close();
+            }
             OpenDesktop();
         }
 

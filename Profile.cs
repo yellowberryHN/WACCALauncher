@@ -1,8 +1,10 @@
 ﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.Linq;
+using LilyConsole;
 
 namespace WACCALauncher
 {
@@ -42,7 +44,9 @@ namespace WACCALauncher
         public string UpdaterArgs;
 
         [JsonProperty]
-        public string ConsoleColor;
+        public string ConsolePattern;
+        
+        public LightFrame PatternLightFrame;
         
         [JsonProperty]
         public string PanelColor;
@@ -114,6 +118,11 @@ namespace WACCALauncher
                 }
             }
 
+            if (loaded.ConsolePattern != null && File.Exists(Path.Combine(loaded.BasePath, loaded.ConsolePattern)))
+            {
+                loaded.SetLightFrame();
+            }
+
             return loaded;
         }
 
@@ -139,6 +148,36 @@ namespace WACCALauncher
             }
 
             return missingFiles == 0;
+        }
+        
+        private void SetLightFrame()
+        {
+            if (ConsolePattern == null) return;
+            
+            var lightFrame = new LightFrame(LightColor.Red);
+            
+            try
+            {
+                var patternBmp = new Bitmap(Path.Combine(BasePath, ConsolePattern));
+                var lightLayer = new LightLayer();
+
+                for (byte y = 0; y < 4; y++)
+                {
+                    for (byte x = 0; x < 60; x++)
+                    {
+                        var pixel = patternBmp.GetPixel(x, y);
+                        lightLayer[x, y] = new LightColor(pixel.R, pixel.G, pixel.B, pixel.A);
+                    }
+                }
+
+                lightFrame.layers[0] = lightLayer;
+            }
+            catch (Exception)
+            {
+                /* we don't care */
+            }
+                
+            PatternLightFrame = lightFrame;
         }
 
         public override string ToString()

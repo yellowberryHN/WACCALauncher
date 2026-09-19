@@ -18,6 +18,11 @@ namespace WACCALauncher
         [JsonProperty] public bool StrictMode { get; set; } = true;
         [JsonProperty] public string ProfileDir { get; set; } = "_profiles";
         [JsonProperty] public bool DisableIO4 { get; set; } = false;
+        [JsonProperty] public bool LegacyIO4 { get; set; } = false;
+        
+        [JsonProperty] public bool DisableLights { get; set; } = false;
+        
+        [JsonProperty] public bool DisableGameKill { get; set; } = false;
 
         public static LauncherSettings Load()
         {

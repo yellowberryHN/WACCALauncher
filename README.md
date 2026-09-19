@@ -8,7 +8,7 @@ Also allows you to run arbitrary programs as well.
 You'll want a directory structure something like this:
 
 ```
-WACCA/
+C:/WACCA/
 ├── _profiles/
 │   ├── WACCA.json
 │   ├── Reverse.json
@@ -35,8 +35,8 @@ A profile is an entry in the list of profiles displayed in the launcher.
 It lets you define launch options for whatever you're launching.
 
 Profiles are .json files, you can have as many profiles in your profiles folder as you want.
-One limitation to be aware of is if you have a profile that shares a name with another one,
-weird things happen. But I'm not sure why you would want that anyway.
+One limitation to be aware of is if you have a profile that has the same `Name` as another one,
+it will throw an error. But I'm not sure why you would want that anyway.
 
 Profiles are validated when the launcher starts, and will throw an error if the configuration is invalid,
 or if the configured files or folders do not exist.
@@ -114,6 +114,16 @@ if not needed.
 You may skip the updater for the default profile by holding the Volume Up button while launching.
 The `...` will turn into `!!!` while you are holding it.
 
+### Advanced Features
+
+You can provide a color for the lower panel with `PanelColor`, in a valid HTML color code,
+to be used during loading. If an invalid color was provided, the panel lights will be turned off.
+If a color is not provided, it will default to a white color.
+
+You can provide the `BasePath` relative path of an image (.png) that is sized 60px x 4px to be shown
+on the WACCA console while starting with `ConsolePattern`. The top pixels are closest to the screen,
+wrapped counter-clockwise starting from 12 o'clock, one pixel per touch segment.
+
 ## Usage
 
 When you start the launcher, you will be presented with a loading prompt.
@@ -124,8 +134,11 @@ It is controlled in the same way you would navigate the in-game test menu.
 You can also perform various tasks helpful for cab management, like open File Explorer, reload profiles, 
 or reboot your cab without a hard power cycle.
 
-If you do not interfere with the loading prompt, the selected default profile
+If you do not interrupt the loading prompt, the selected default profile
 will be launched within 5 seconds.
+
+If you want to close the game, and go back to the launcher, press all four IO4 buttons at once,
+`Volume Up`/`Down` + `TEST` + `SERVICE`. This can be disabled in `launcher.json`.
 
 ## Watchdog
 
@@ -139,7 +152,8 @@ If this behavior is undesired, it can be disabled by setting `UseWatchdog` to fa
 ## Auto-launch
 
 You can configure your cab to start the launcher instead of the Windows Desktop when you log in.
-**This should only be done on a cab. You have been warned.**
+
+***This should only be done on a cab! You have been warned!***
 
 If you've installed the launcher in the suggested location of `C:\WACCA`,
 you can run `SetShell.reg` to reconfigure your registry accordingly. 

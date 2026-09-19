@@ -9,6 +9,8 @@ namespace WACCALauncher
         private Stack<Tuple<Menu, int>> _menuLevels = new Stack<Tuple<Menu, int>>();
         private WaccaList _list;
         private MainForm _form;
+        
+        internal IControlledMenuItem _controlledItem;
 
         public MenuManager(Menu root, WaccaList list, MainForm form)
         {
@@ -21,14 +23,30 @@ namespace WACCALauncher
 
         public void CursorUp()
         {
+            // scroll options
+            if (_controlledItem != null)
+            {
+                _controlledItem.Back();
+                RefreshList();
+                return;
+            }
+            
             // move cursor up
-            var idx = ((_list.SelectedIndex - 1) + _list.Items.Count) % _list.Items.Count;
+            var idx = (_list.SelectedIndex - 1 + _list.Items.Count) % _list.Items.Count;
             _list.SelectedIndex = idx;
             if (_list.Items[idx] is MenuSeparator) CursorUp();
         }
 
         public void CursorDown()
         {
+            // scroll options
+            if (_controlledItem != null)
+            {
+                _controlledItem.Forward();
+                RefreshList();
+                return;
+            }
+            
             // move cursor down
             var idx = (_list.SelectedIndex + 1) % _list.Items.Count;
             _list.SelectedIndex = idx;
@@ -40,7 +58,7 @@ namespace WACCALauncher
             // back from current menu item
             if (_menuLevels.Count < 1)
             {
-                _form._state = LauncherState.Launching;
+                _form.State = LauncherState.Launching;
                 _form.MenuHide();
                 if (MainForm.DefaultProfile == null) _form.SetDefaultProfile();
             }
@@ -50,7 +68,7 @@ namespace WACCALauncher
         public void MenuSelect()
         {
             // select menu item
-            (_list.SelectedItem as IMenuItem).Select(_form);
+            (_list.SelectedItem as IMenuItem)?.Select(_form);
         }
 
         public Menu GetCurrentMenu()
@@ -80,8 +98,7 @@ namespace WACCALauncher
 
         private void UpdateList(int idx = 0)
         {
-            _list.Items.Clear();
-            _list.Items.AddRange(_currentMenu.GetItems().ToArray());
+            _list.DataSource = _currentMenu.GetItems();
             _form.MenuUpdateLabel(_currentMenu.Heading);
             if (_list.Items.Count > 0) _list.SelectedIndex = idx;
         }
@@ -89,6 +106,18 @@ namespace WACCALauncher
         internal void RefreshList()
         {
             _list.Invalidate();
+        }
+
+        internal void TakeControl(IControlledMenuItem item)
+        {
+            _controlledItem = item;
+            RefreshList();
+        }
+
+        internal void ReturnControl()
+        {
+            _controlledItem = null;
+            RefreshList();
         }
     }
 }

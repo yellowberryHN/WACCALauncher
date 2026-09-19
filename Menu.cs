@@ -47,6 +47,82 @@ namespace WACCALauncher
         }
     }
 
+    internal interface IControlledMenuItem : IMenuItem
+    {
+        void Forward();
+        void Back();
+    }
+
+    internal class MenuListOption<T> : IControlledMenuItem
+    {
+        private Tuple<List<string>, List<T>> _items;
+        
+        private int _index;
+        private int _maxIndex;
+        private readonly Action<T> _selectAction;
+        private readonly Action<T> _changedAction;
+
+        private bool _isActive;
+
+        public MenuListOption(string name, Action<T> selectAction, Tuple<List<string>, List<T>> items, Action<T> changedAction = null)
+        {
+            Name = name;
+            _selectAction = selectAction;
+            _changedAction = changedAction;
+
+            if (items.Item1.Count != items.Item2.Count)
+            {
+                throw new ArgumentException("Lists in item tuple must be the same length");
+            }
+            
+            _items = items;
+            _maxIndex = _items.Item1.Count;
+        }
+
+        public string Name { get; }
+
+        public void Select(MainForm form)
+        {
+            if (!_isActive)
+            {
+                form._menuManager.TakeControl(this);
+                _isActive = true;
+                IndexChanged();
+            }
+            else
+            {
+                // run action with argument based on currently selected index
+                _selectAction?.Invoke(_items.Item2[_index]);
+                form._menuManager.ReturnControl();
+                _isActive = false;
+            }
+        }
+
+        public void Forward()
+        {
+            var newIdx = (_index + 1) % _maxIndex;
+            _index = newIdx;
+            IndexChanged();
+        }
+
+        public void Back()
+        {
+            var newIdx = (_index - 1 + _maxIndex) % _maxIndex;
+            _index = newIdx;
+            IndexChanged();
+        }
+
+        private void IndexChanged()
+        {
+            _changedAction?.Invoke(_items.Item2[_index]);
+        }
+
+        public override string ToString()
+        {
+            return $"{Name}\t{_items.Item1[_index]}";
+        }
+    }
+
     internal class MenuReturn : IMenuItem
     {
         public string Name { get; }
